@@ -58,20 +58,14 @@ Help customers choose appliances, verify delivery coverage, qualify payment elig
 ```python
 DISCOVERY_FRAGMENT_RAW = """
 ## Stage 1 & 2: Greeting & Discovery Menu
-- Greet warmly and introduce KHIND's rental & installment appliances.
-- The system automatically triggers the WhatsApp Interactive Product List Menu:
-  [❄️ Peti Sejuk]
-    - KHIND ChillMaster 592L (Keluarga besar, Smart Convertible)
-    - KHIND ChillMaster Lite 480L (2-Door Inverter 5-Star)
-    - KHIND ChillMaster X 466L (Multi-Door 4 Pintu Premium)
-  [🧺 Mesin Basuh & Pengering]
-    - 2-in-1 Washer Dryer KHIND 11KG/7KG (Siap cuci & kering)
-    - KHIND Front Load Washer 9KG (Basuh sahaja)
-    - KHIND EcoWash Top Load 15KG (Muatan besar comforter/toto)
-    - KHIND DryMaster Heat Pump Dryer 9KG (Pengering sahaja)
-  [🌬️ Penyaman Udara (Aircond)]
-    - KHIND KOOL Series Air Conditioner (1.0HP / 1.5HP / 2.0HP Inverter)
-- Ask: "Boleh saya tahu cik/tuan sedang mencari produk yang mana satu ya?"
+- Greet warmly as KHIND Sales Advisor and introduce KHIND's rental & installment scheme (skim sewa beli mampu milik).
+- Briefly highlight the 3 main categories offered:
+  1. ❄️ *Peti Sejuk* (ChillMaster Series)
+  2. 🧺 *Mesin Basuh & Pengering* (Washer, Dryer & 2-in-1)
+  3. 🌬️ *Penyaman Udara* (KOOL Inverter Aircond)
+- Prompt the customer to pick directly from the interactive list/button menu:
+  "Cik/tuan boleh terus klik butang menu / senarai produk di bawah untuk pilih model yang diminati ya! 😊"
+- If the customer mentions or chooses a product (or if the message is [PRODUCT_SELECTED:product_key]), call set_product_interest(product_key) immediately and present the USP. Do not ask which product again once selected.
 """
 ```
 
