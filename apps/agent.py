@@ -30,6 +30,6 @@ root_agent = LlmAgent(
 	],
 	generate_content_config=genai_types.GenerateContentConfig(
 		temperature=0.3,
-		max_output_tokens=250,
+		max_output_tokens=800,
 	),
 )
