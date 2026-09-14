@@ -138,22 +138,30 @@ COVERAGE_FRAGMENT_RAW = """
 When the customer wants to apply, buy, or order, confirm the selected product and ask for their postcode and installation area:
 "Pilihan terbaik! Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak penghantaran percuma? 😊"
 
-### Senarai Rasmi Liputan Penghantaran & Pemasangan KHIND (SEMAK TERUS SENARAI DI BAWAH, JANGAN GUNA RAG):
-1. **Semenanjung Malaysia:**
-   - **SELURUH Semenanjung Malaysia** ada liputan (Covered ✅).
+### Cara Ejen Semak Liputan Poskod / Kawasan (SEMAK TERUS SENARAI DI BAWAH, JANGAN GUNA TOOL / RAG):
+1. **Semenanjung Malaysia (Poskod 01000 hingga 86999):**
+   - **SEMUA kawasan & poskod di Semenanjung Malaysia** ada liputan (Covered ✅).
+   - Termasuk KL, Selangor, Johor, Pulau Pinang, Perak, Kedah, Pahang, Negeri Sembilan, Melaka, Kelantan, Terengganu, Perlis.
 
-2. **Sarawak (Hanya kawasan tersenarai berikut):**
-   - Sarikei, Asajaya, Miri, Kuching, Kota Samarahan, Balingian Mukah, Sibu, Siburan, Sri Aman, Bau, Serian.
+2. **Sarawak (Poskod bermula 93xxx hingga 98xxx):**
+   - **HANYA kawasan tersenarai berikut ada liputan (Covered ✅):**
+     *Sarikei, Asajaya, Miri, Kuching, Kota Samarahan, Balingian Mukah, Sibu, Siburan, Sri Aman, Bau, Serian, Bintulu.*
+   - Kawasan Sarawak lain yang tiada dalam senarai (contoh: Kapit, Limbang, Lawas, Marudi) adalah (Not Covered ❌).
 
-3. **Sabah (Hanya kawasan tersenarai berikut):**
-   - Kudat, Papar, Menumbok, Ranau, Tuaran, Sandakan, Tambunan, Kota Kinabalu, Bongawan, Keningau, Kuala Penyu, Lahad Datu, Tenom, Penampang, Kota Kinabatangan, Sook, Beaufort, Tawau, Kundasang, Tamparuli, Semporna, Kota Belud, Kunak, Telupid, Beluran, Membakut (Town), Kota Marudu, Sipitang.
+3. **Sabah (Poskod bermula 88xxx hingga 91xxx):**
+   - **HANYA kawasan tersenarai berikut ada liputan (Covered ✅):**
+     *Kudat, Papar, Menumbok, Ranau, Tuaran, Sandakan, Tambunan, Kota Kinabalu, Bongawan, Keningau, Kuala Penyu, Lahad Datu, Tenom, Penampang, Kota Kinabatangan, Sook, Beaufort, Tawau, Kundasang, Tamparuli, Semporna, Kota Belud, Kunak, Telupid, Beluran, Membakut (Town), Kota Marudu, Sipitang.*
+   - Kawasan pedalaman Sabah yang tiada dalam senarai adalah (Not Covered ❌).
 
-### Peraturan Semakan:
+4. **W.P. Labuan (Poskod 87xxx) & Luar Malaysia:**
+   - Tiada liputan (Not Covered ❌).
+
+### Tindakan Ejen:
 - **JIKA DALAM LIPUTAN (Covered ✅):**
-  1. Nyatakan dengan mesra: "Alhamdulillah, kawasan [Kawasan/Poskod] ada dalam liputan penghantaran & pemasangan kami! 🚚✨"
-  2. Panggil tool `advance_purchase_stage()` untuk beralih ke peringkat kelayakan (qualification).
+  1. Balas dengan mesra: "Baik, kawasan [Kawasan/Poskod] ada dalam liputan penghantaran & pemasangan kami! 🚚✨"
+  2. Panggil tool `advance_purchase_stage()` untuk beralih ke peringkat kelayakan (`qualification`).
   3. Teruskan bertanya kelayakan kerja & slip gaji: "Boleh saya tahu cik/tuan bekerja dan ada slip gaji bulanan ya?"
-- **JIKA TIADA LIPUTAN (Not Covered ❌ - Kawasan Sarawak/Sabah luar senarai di atas, Labuan, luar Malaysia):**
+- **JIKA TIADA LIPUTAN (Not Covered ❌):**
   1. Nyatakan permohonan maaf dan tawarkan alternatif: "Maaf sangat cik/tuan, kawasan [Kawasan] belum ada liputan KHIND buat masa ini. 🙏 Namun kami ada jenama rakan kongsi yang cover kawasan cik/tuan. Saya sambungkan ke pegawai khidmat pelanggan kami ya?"
   2. Panggil tool `escalate_to_live_agent(label="coverage-unsupported-alternative")` serta-merta.
 """
