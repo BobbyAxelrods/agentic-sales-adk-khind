@@ -32,11 +32,12 @@ def _parse_contexts(response) -> list[dict[str, str]]:
 
 
 async def query_product_info(query: str, tool_context: ToolContext) -> dict:
-    """Search verified KHIND product, pricing, promotion, and coverage documents.
+    """Search verified KHIND product, pricing, promotion, and warranty documents.
 
     Call for product follow-up questions, prices, promotions, warranty, dimensions,
-    delivery coverage, and application eligibility. Include the selected product name
-    and the specific topic in the query. Never infer facts that are absent from results.
+    and technical specs. Include the selected product name and the specific topic
+    in the query. Never infer facts that are absent from results.
+    Do NOT call this tool for location coverage (coverage is checked via prompt rules).
     """
     cleaned_query = (query or "").strip()
     if not cleaned_query:
