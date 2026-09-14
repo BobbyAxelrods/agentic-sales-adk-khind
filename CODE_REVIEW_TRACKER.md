@@ -282,21 +282,21 @@ tests/test_gcs_integration.py   — real download_bytes from khind_2028 bucket
 ### RAG Corpus
 `projects/prudential-poc-484904/locations/asia-southeast1/ragCorpora/2305843009213693952`
 
-### `.env`
+### `.env` (Template / Reference)
 ```env
-GOOGLE_CLOUD_PROJECT=prudential-poc-484904
+GOOGLE_CLOUD_PROJECT=your-gcp-project-id
 GOOGLE_CLOUD_LOCATION=asia-southeast1
 GOOGLE_GENAI_USE_VERTEXAI=1
 LLM_MODEL=gemini-2.5-flash
-RAG_CORPUS_NAME=projects/prudential-poc-484904/locations/asia-southeast1/ragCorpora/2305843009213693952
-VERTEX_AI_AGENT_ENGINE_ID=51562697296183296
-GOOGLE_APPLICATION_CREDENTIALS=prudential-poc-484904-753817046cca.json
+RAG_CORPUS_NAME=projects/your-gcp-project-id/locations/asia-southeast1/ragCorpora/your-corpus-id
+VERTEX_AI_AGENT_ENGINE_ID=your-agent-engine-id
+GOOGLE_APPLICATION_CREDENTIALS=your-service-account-key.json
 GCS_BUCKET=khind_2028
 CHATWOOT_BASE_URL=https://app.chatwoot.com
-CHATWOOT_API_TOKEN=kWXCeQhvH76ppuAArk1UmD2M
-CHATWOOT_ACCOUNT_ID=166865
-CHATWOOT_WEBHOOK_SECRET=oWXBuZmV828SANiCv6jaf41b
-CHATWOOT_HUMAN_AGENT_ID=180662
+CHATWOOT_API_TOKEN=your_chatwoot_api_token
+CHATWOOT_ACCOUNT_ID=your_account_id
+CHATWOOT_WEBHOOK_SECRET=your_webhook_secret
+CHATWOOT_HUMAN_AGENT_ID=your_agent_id
 PORT=8081
 DEV_MODE=true
 ```
