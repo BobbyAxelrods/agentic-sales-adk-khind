@@ -48,3 +48,6 @@ logs/
 *.db
 *.sqlite3
 
+
+# graphify — knowledge graph outputs, cache, and interpreter/root markers
+graphify-out/
