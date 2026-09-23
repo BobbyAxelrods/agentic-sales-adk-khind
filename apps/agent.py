@@ -5,6 +5,7 @@ from google.genai import types as genai_types
 
 from apps.config import settings
 from apps.prompts.khind_assembler import get_khind_instruction
+from apps.services.replies import insert_pending_usp
 from apps.tools.escalation_tool import escalate_to_live_agent
 from apps.tools.rag_tool import query_product_info
 from apps.tools.session_tools import (
@@ -28,8 +29,13 @@ root_agent = LlmAgent(
 		mark_application_form_sent,
 		save_application_details,
 	],
+	# Puts the approved USP, word for word, above the reply after a first product pick.
+	after_model_callback=insert_pending_usp,
 	generate_content_config=genai_types.GenerateContentConfig(
 		temperature=0.3,
-		max_output_tokens=800,
+		# Gemini 2.5 counts thinking tokens against max_output_tokens; cap thinking so
+		# long replies such as the BORANG are never cut off.
+		max_output_tokens=2048,
+		thinking_config=genai_types.ThinkingConfig(thinking_budget=1024),
 	),
 )

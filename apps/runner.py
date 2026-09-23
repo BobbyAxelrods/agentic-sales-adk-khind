@@ -24,6 +24,7 @@ from google.genai import types as genai_types
 
 from apps.agent import root_agent
 from apps.config import settings
+from apps.services.replies import build_reply
 
 logger = logging.getLogger(__name__)
 
@@ -212,23 +213,22 @@ async def run_turn(session_id: str, user_message: str) -> tuple[str, dict[str, A
         parts=[genai_types.Part(text=user_message)],
     )
 
-    reply_parts: list[str] = []
+    events = []
     try:
         async for event in runner.run_async(
             user_id=session_id,
             session_id=session_id,
             new_message=content,
         ):
-            if event.is_final_response() and event.content:
-                for part in event.content.parts:
-                    if hasattr(part, "text") and part.text:
-                        reply_parts.append(part.text)
+            events.append(event)
     except Exception:
         logger.exception("ADK runner failed for session %s", session_id)
         fallback = "Maaf, sistem sedang mengalami masalah teknikal. Sila cuba sebentar lagi. 🙏"
         return fallback, get_session_state(session_id)
 
-    reply_text = "".join(reply_parts).strip() or "Maaf, saya tidak faham. Boleh ulangi soalan anda? 😊"
+    # build_reply also keeps text written alongside a tool call (e.g. a handoff line),
+    # which is_final_response() alone would drop.
+    reply_text = build_reply(events) or "Maaf, saya tidak faham. Boleh ulangi soalan anda? 😊"
     state = get_session_state(session_id)
 
     # Fire-and-forget — Vertex write does not block the customer reply.

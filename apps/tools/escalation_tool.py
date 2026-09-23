@@ -8,7 +8,7 @@ from apps.clients.chatwoot import chatwoot
 ESCALATION_LABELS = frozenset(
     {
         "coverage-unsupported-alternative",
-        "no-payslip-alternative",
+        "not-working",
         "human-required",
         "angry-customer",
         "rag-error",
@@ -25,7 +25,7 @@ async def escalate_to_live_agent(label: str, tool_context: ToolContext) -> dict:
 
     Args:
         label: Chatwoot label to apply — must be one of the approved values:
-               'human-required', 'angry-customer', 'no-payslip-alternative',
+               'human-required', 'angry-customer', 'not-working',
                'coverage-unsupported-alternative', 'rag-error'.
         tool_context: ADK tool context (injected by framework).
 

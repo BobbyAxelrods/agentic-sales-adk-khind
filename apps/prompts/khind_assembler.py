@@ -6,8 +6,6 @@ from apps.prompts.khind_prompts import (
     DISCOVERY_FRAGMENT_RAW,
     KHIND_CORE_RAW,
     KHIND_ESCALATION_RAW,
-    PRODUCT_RAG_FRAGMENT_RAW,
-    PRODUCT_USP_FRAGMENT_RAW,
 )
 
 
@@ -31,17 +29,12 @@ def get_khind_instruction(context=None) -> str:
         ),
     ]
 
-    if purchase_stage == "discovery" and not product_interest:
+    if not product_interest:
         parts.append(DISCOVERY_FRAGMENT_RAW)
-    elif purchase_stage in ("discovery", "product") and product_interest:
-        parts.append(
-            PRODUCT_RAG_FRAGMENT_RAW
-            if product_interest in pitched_products
-            else PRODUCT_USP_FRAGMENT_RAW
-        )
-    elif purchase_stage == "location":
-        parts.append(COVERAGE_FRAGMENT_RAW)
     elif purchase_stage in ("qualification", "form"):
         parts.append(CLOSING_FRAGMENT_RAW)
+    else:
+        # "location", or a legacy "discovery"/"product" session that already has a product.
+        parts.append(COVERAGE_FRAGMENT_RAW)
 
     return "\n\n".join(parts)

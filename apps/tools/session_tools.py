@@ -123,10 +123,13 @@ def _resolve_product_key(raw_key: str) -> str | None:
 
 
 def set_product_interest(product_key: str, tool_context: ToolContext) -> dict:
-    """Select a KHIND product and return its first-time fixed USP.
+    """Select the KHIND product the customer wants.
 
-    Call when the customer selects a product (by key, product number 1-8, or model name).
-    On a first selection, the returned USP must be used exactly once in the customer reply.
+    Call when the customer selects or names a product (canonical key, product number
+    1-8, or model name), at any stage. A first selection moves the journey to the
+    location step, so ask for the postcode and installation area next. The system
+    sends the product USP and media automatically: never write, repeat or summarise
+    the USP yourself.
     """
     selected_product = _resolve_product_key(product_key)
     if not selected_product:
@@ -143,31 +146,55 @@ def set_product_interest(product_key: str, tool_context: ToolContext) -> dict:
         tool_context.state["rag_cache_generation"] = (
             tool_context.state.get("rag_cache_generation", 0) + 1
         )
-    if tool_context.state.get("purchase_stage", "discovery") == "discovery":
-        tool_context.state["purchase_stage"] = "product"
+    # A product pick goes straight to the location step. Later stages stay put, so a
+    # product switch mid-flow keeps the customer on their pending step.
+    if tool_context.state.get("purchase_stage", "discovery") in ("discovery", "product"):
+        tool_context.state["purchase_stage"] = "location"
 
     if is_first_pitch:
         pitched_products.add(selected_product)
         tool_context.state["pitched_products"] = sorted(pitched_products)
+        # Read by apps.services.replies.insert_pending_usp, which puts the approved
+        # USP word for word at the top of this turn's reply.
+        pending_usps = list(tool_context.state.get("pending_usp_products", []))
+        if selected_product not in pending_usps:
+            pending_usps.append(selected_product)
+        tool_context.state["pending_usp_products"] = pending_usps
 
     result = {
         "status": "ok",
         "product_interest": selected_product,
         "first_time": is_first_pitch,
+        "purchase_stage": tool_context.state.get("purchase_stage"),
     }
     if is_first_pitch:
-        result["usp"] = KHIND_PRODUCT_USPS[selected_product]
+        result["usp_sent_automatically"] = True
+        result["reply_rule"] = (
+            "The system sends this product's USP and media automatically. Do not write "
+            "any product description or feature list. Reply only with the pending step's question."
+        )
         result["media_delivery"] = "trigger"
     return result
 
 
 def advance_purchase_stage(tool_context: ToolContext) -> dict:
-    """Advance the sales journey by exactly one valid stage.
+    """Move the sales journey from the location step to the employment step.
 
-    Call only after the customer has completed the current stage. Product selection
-    is handled by set_product_interest, which moves discovery to product.
+    Call once the customer's installation area is confirmed covered. Product
+    selection is handled by set_product_interest, which moves the journey to the
+    location step.
     """
     current_stage = tool_context.state.get("purchase_stage", "discovery")
+    if not tool_context.state.get("product_interest"):
+        return {
+            "status": "error",
+            "message": "No product selected yet. Ask the customer to choose a product first.",
+            "current_stage": current_stage,
+        }
+    if current_stage in ("discovery", "product"):
+        # Sessions saved before 2026-09-24 can sit here with a product already chosen.
+        # They are on the location step.
+        current_stage = "location"
     next_stage = _NEXT_STAGE.get(current_stage)
     if not next_stage:
         return {

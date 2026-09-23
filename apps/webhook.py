@@ -18,6 +18,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["webhook"])
 
+# Media goes out before the text reply, but the text never waits longer than this.
+_MEDIA_WAIT_SECONDS = 20.0
+# Strong references so slow media uploads are not garbage-collected mid-flight.
+_background_tasks: set[asyncio.Task] = set()
+
 
 # ---------------------------------------------------------------------------
 # Payload extraction helpers
@@ -166,6 +171,45 @@ async def _deliver_media(
     await asyncio.gather(*(_send_one(item) for item in plan["media"]))
 
 
+def _on_media_task_done(task: asyncio.Task) -> None:
+    _background_tasks.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.error("Media delivery task failed", exc_info=task.exception())
+
+
+def _track(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_on_media_task_done)
+    return task
+
+
+async def _set_pending_when_done(media_task: asyncio.Task, conversation_id: str) -> None:
+    """Re-apply 'pending' once a late upload finishes, since each API send reopens the chat."""
+    await asyncio.wait({media_task})
+    await chatwoot.set_conversation_pending(conversation_id)
+
+
+async def _deliver_media_before_text(
+    conversation_id: str,
+    product_key: str,
+    state: dict[str, Any],
+    session_id: str,
+    keep_pending: bool,
+) -> None:
+    """Start media delivery and wait up to _MEDIA_WAIT_SECONDS before the text is sent.
+
+    This gives the sketched order (2 images + 1 video, then USP + location question).
+    A slow upload keeps running in the background so the text reply is never held up.
+    keep_pending: the caller will set the conversation to pending after its text; a
+    late upload then sets it again so the bot gate stays active.
+    """
+    media_task = _track(_deliver_media(conversation_id, product_key, state, session_id))
+    done, _ = await asyncio.wait({media_task}, timeout=_MEDIA_WAIT_SECONDS)
+    if not done and keep_pending:
+        _track(_set_pending_when_done(media_task, conversation_id))
+
+
 async def _maybe_send_catalog(
     conversation_id: str,
     session_id: str,
@@ -245,10 +289,13 @@ async def webhook(request: Request) -> dict[str, str]:
         reply_text, state = await run_turn(session_id, synthetic_message)
 
         if conversation_id:
+            # Media first, then text; the pending toggle stays the last API call.
+            await _deliver_media_before_text(
+                conversation_id, product_key, state, session_id, keep_pending=bool(reply_text)
+            )
             if reply_text:
                 await chatwoot.send_text(conversation_id, reply_text)
                 await chatwoot.set_conversation_pending(conversation_id)
-            await _deliver_media(conversation_id, product_key, state, session_id)
 
         return {"status": "ok"}
 
@@ -266,15 +313,23 @@ async def webhook(request: Request) -> dict[str, str]:
     reply_text, state = await run_turn(session_id, message_text)
 
     if conversation_id:
-        if reply_text:
-            await chatwoot.send_text(conversation_id, reply_text)
-            # Keep bot gate active — Chatwoot toggles to 'open' on every outbound API send.
-            if not state.get("escalated"):
-                await chatwoot.set_conversation_pending(conversation_id)
-
+        # Media first (a no-op after the first pick of a product), then text.
         product_key = state.get("product_interest", "")
         if product_key:
-            await _deliver_media(conversation_id, product_key, state, session_id)
+            await _deliver_media_before_text(
+                conversation_id,
+                product_key,
+                state,
+                session_id,
+                keep_pending=bool(reply_text) and not state.get("escalated"),
+            )
+
+        if reply_text:
+            await chatwoot.send_text(conversation_id, reply_text)
+            # Keep bot gate active — Chatwoot toggles to 'open' on every outbound API send,
+            # so this must stay the last send of the turn.
+            if not state.get("escalated"):
+                await chatwoot.set_conversation_pending(conversation_id)
 
         await _maybe_escalate(conversation_id, state)
 
