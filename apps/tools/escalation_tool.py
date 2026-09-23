@@ -47,8 +47,9 @@ async def escalate_to_live_agent(label: str, tool_context: ToolContext) -> dict:
         tool_context.state["escalation_label"] = normalized_label
         return {"status": "ok", "escalated": True, "label": normalized_label, "chatwoot": "skipped"}
 
+    # ADK's State is not a Mapping: dict(state) raises KeyError(0), so use to_dict().
     ok = await chatwoot.escalate_conversation(
-        conversation_id, normalized_label, dict(tool_context.state)
+        conversation_id, normalized_label, tool_context.state.to_dict()
     )
 
     tool_context.state["escalated"] = True

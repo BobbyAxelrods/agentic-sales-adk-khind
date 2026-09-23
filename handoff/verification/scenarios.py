@@ -1,17 +1,22 @@
 """Scripted chats against `adk api_server` (real Gemini, no Chatwoot).
 
-Start the server first, from the repo root:
-    .venv/bin/adk api_server --port 8000 --session_service_uri memory:// .
-Then: .venv/bin/python handoff/verification/scenarios.py [happy notcovered notworking friend linear switch legacy]
+Start the server first, from the repo root (port 8001 leaves ADK Web on 8000 alone):
+    .venv/bin/adk api_server --port 8001 --session_service_uri memory:// .
+Then: KHIND_API_BASE=http://127.0.0.1:8001 .venv/bin/python handoff/verification/scenarios.py [names...]
+Names: happy notcovered notworking friend linear switch legacy
+       price592 postcode_only product_area mention menu_pending kb_gap switch_back completion
 """
-import sys, time
+import os, re, sys, time
 import httpx
 sys.path.insert(0, ".")
 from google.adk.events import Event
 from apps.services.replies import build_reply
-from apps.prompts.khind_prompts import KHIND_PRODUCT_USPS, NOT_WORKING_HANDOFF_LINE
+from apps.prompts.khind_prompts import (
+    APPLICATION_COMPLETE_LINE, KHIND_PRODUCT_USPS, NOT_WORKING_HANDOFF_LINE, PRODUCT_MENU,
+)
 
-BASE, APP, USER = "http://127.0.0.1:8000", "apps", "verify"
+BASE = os.environ.get("KHIND_API_BASE", "http://127.0.0.1:8000")
+APP, USER = "apps", "verify"
 only = set(sys.argv[1:])
 
 def wait_ready():
@@ -52,7 +57,10 @@ def check(name, cond):
 
 USP = KHIND_PRODUCT_USPS
 LOCQ = "Poskod & Kawasan"
+GAP = "Pegawai kami akan sahkan"  # from KB_GAP_LINE
 ticks = lambda s: sum(1 for line in s.split(chr(10)) if line.strip().startswith("✅"))
+# True if the reply ends with a question, ignoring trailing emoji.
+ends_with_question = lambda s: re.sub(r"[\s\U0001F000-\U0001FAFF☀-➿️]+$", "", s).endswith("?")
 
 def happy():
     print("\n===== Happy path =====")
@@ -115,6 +123,102 @@ def legacy():
     r, t, st = say(s, "Kajang, Selangor")
     check("legacy: ends in qualification with covered line", st["purchase_stage"] == "qualification" and "liputan" in r and "bekerja" in r)
 
+# --- Smoke-test failures of 2026-09-24, one scenario each ---
+
+def usp_then_question_only(r, key):
+    """After a first pick: the exact USP, then the question, with no model comment between."""
+    return r.count(USP[key]) == 1 and r.split(USP[key])[-1].strip().startswith("Boleh kongsikan Poskod")
+
+def price592():
+    print("\n===== A3: 592L price =====")
+    s = new_session()
+    r, t, st = say(s, "1")
+    check("A2: USP then the location question, no model comment", usp_then_question_only(r, "chillmaster_592l"))
+    r, t, st = say(s, "Berapa harga ansuran bulanan untuk model ni?")
+    check("A3: no Lite 480L prices (RM75/RM95)", "RM75" not in r and "RM95" not in r)
+    check("A3: 592L prices from its own document (RM99/RM119)", "RM99" in r or "RM119" in r)
+    check("A3: location question again, stage location, no handoff",
+          LOCQ in r and st["purchase_stage"] == "location" and not st.get("escalated"))
+
+def postcode_only():
+    print("\n===== B10: postcode without a town =====")
+    s = new_session()
+    say(s, "1")
+    r, t, st = say(s, "Poskod 96800")
+    check("B10: no verdict, asks for the town, stage location",
+          "ada dalam liputan" not in r and "belum ada liputan" not in r and "bandar" in r.lower()
+          and st["purchase_stage"] == "location" and not st.get("escalated"))
+    r, t, st = say(s, "Kapit")
+    check("B10: then 'Kapit' -> not-covered handoff",
+          st.get("escalation_label") == "coverage-unsupported-alternative" and "Kapit" in r and r.count("nanti") == 1)
+
+def product_area():
+    print("\n===== B11: product and area in one message =====")
+    s = new_session()
+    r, t, st = say(s, "Saya nak aircond, saya duduk Kajang Selangor")
+    check("B11: exact aircond USP once", r.count(USP["aircond_kool_series"]) == 1 and ticks(r) == ticks(USP["aircond_kool_series"]))
+    check("B11: covered line + kerja question, no location question",
+          "ada dalam liputan" in r and "bekerja" in r and "Boleh kongsikan Poskod" not in r)
+    check("B11: stage qualification, not escalated", st["purchase_stage"] == "qualification" and not st.get("escalated"))
+
+def mention():
+    print("\n===== C2: product named in a question =====")
+    s = new_session()
+    r, t, st = say(s, "Ada aircond tak?")
+    check("C2: aircond picked", "set_product_interest" in t and st.get("product_interest") == "aircond_kool_series")
+    check("C2: exact aircond USP once + location question", r.count(USP["aircond_kool_series"]) == 1 and LOCQ in r)
+
+def menu_pending():
+    print("\n===== D4-D6: list, repeat question, item outside the list =====")
+    s = new_session()
+    r, t, st = say(s, "7")
+    check("7: USP then the location question, no model comment", usp_then_question_only(r, "drymaster_9kg"))
+    r, t, st = say(s, "Ada produk apa lagi?")
+    check("D4: grouped list copied exactly", PRODUCT_MENU in r)
+    check("D4: location question (pending step), stage unchanged", LOCQ in r and st["purchase_stage"] == "location")
+    r, t, st = say(s, "Waranti berapa tahun untuk produk ni?")
+    check("D5: location question again, not 'which product'", LOCQ in r and "yang mana" not in r.lower())
+    r, t, st = say(s, "KHIND ada jual TV atau microwave tak?")
+    unseen_list = any(p in r for p in ("senarai tadi", "senarai produk tadi", "sebelum ini", "di atas"))
+    check("D6: no brand-wide claim, no reference to an unseen list",
+          "tidak menjual" not in r and (not unseen_list or PRODUCT_MENU in r))
+    check("D6: location question again", LOCQ in r)
+
+def kb_gap():
+    print("\n===== E1: fact missing from the documents =====")
+    s = new_session()
+    r, t, st = say(s, "What is the monthly price for the air conditioner?")
+    check("E1: no handoff", not st.get("escalated") and "escalate_to_live_agent" not in t)
+    check("E1: gap line (the aircond document has no monthly price)", GAP in r)
+    check("E1: aircond picked, location question", st.get("product_interest") == "aircond_kool_series" and LOCQ in r)
+
+def switch_back():
+    print("\n===== G6: back to an earlier product, with a question =====")
+    s = new_session()
+    say(s, "1")
+    say(s, "Poskod 43000, Kajang Selangor")
+    say(s, "Sebenarnya saya lebih berminat dengan mesin basuh front load")
+    r, t, st = say(s, "Ok balik pada peti ais 592L tadi, berapa berat dia?")
+    flat = r.replace(" ", "").lower()
+    check("G6: active product back to 592L", st.get("product_interest") == "chillmaster_592l")
+    check("G6: 85 kg from the 592L document, no Lite 480L figures", "85kg" in flat and "80kg" not in flat and "87kg" not in flat)
+    check("G6: no handoff, kerja question, no USP repeat",
+          not st.get("escalated") and "bekerja" in r and USP["chillmaster_592l"] not in r)
+
+def completion():
+    print("\n===== E4 / A10 / A11: after the form is complete =====")
+    s = new_session()
+    for text in ("1", "Poskod 43000, Kajang Selangor", "Ya saya kerja swasta", "Ok jom semak"):
+        say(s, text)
+    r, t, st = say(s, "Nama Ali bin Abu, No IC 900101015511, WhatsApp 0123456789, emel ali@example.com, "
+                      "alamat No 5 Jalan Bunga Kajang, teknisi di ABC Sdn Bhd mula Jan 2020. "
+                      "Kecemasan: Siti binti Ahmad, 0198887777, isteri")
+    check("A10: complete, fixed completion line, ends with a question",
+          st.get("application_complete") and APPLICATION_COMPLETE_LINE in r and ends_with_question(r))
+    check("A10: no personal value echoed", "Ali" not in r and "900101015511" not in r)
+    r, t, st = say(s, "Boleh hantar borang sekali lagi?")
+    check("A11: no second form, ends with a question", "BORANG PERMOHONAN KHIND" not in r and ends_with_question(r))
+
 SCEN = {
     "happy": happy,
     "notcovered": not_covered,
@@ -123,6 +227,14 @@ SCEN = {
     "linear": linear,
     "switch": switch,
     "legacy": legacy,
+    "price592": price592,
+    "postcode_only": postcode_only,
+    "product_area": product_area,
+    "mention": mention,
+    "menu_pending": menu_pending,
+    "kb_gap": kb_gap,
+    "switch_back": switch_back,
+    "completion": completion,
 }
 for key, fn in SCEN.items():
     if not only or key in only:

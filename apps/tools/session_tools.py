@@ -1,11 +1,23 @@
 """ADK tools that maintain the KHIND sales journey session state."""
 
+import re
+
 from google.adk.tools import ToolContext
 
-from apps.prompts.khind_prompts import KHIND_PRODUCT_USPS
+from apps.prompts.khind_prompts import (
+    KHIND_PRODUCT_USPS,
+    LOCATION_QUESTION,
+    POSTCODE_QUESTION,
+    TOWN_QUESTION,
+)
+from apps.services.coverage import REGION_NAMES, check_coverage
+from apps.services.replies import REPLY_FACTS_KEY
 
 
 PURCHASE_STAGES = ("discovery", "product", "location", "qualification", "form")
+# Stages at which the customer is still on the location step ("discovery"/"product" are
+# legacy values that can already have a product).
+LOCATION_STEP_STAGES = ("discovery", "product", "location")
 
 APPLICATION_FIELDS = (
     "full_name",
@@ -33,13 +45,6 @@ APPLICATION_FIELD_LABELS = {
     "emergency_contact_name": "Nama kecemasan",
     "emergency_contact_phone": "No. HP kecemasan",
     "emergency_contact_relationship": "Hubungan kecemasan",
-}
-
-_NEXT_STAGE: dict[str, str] = {
-    "discovery": "product",
-    "product": "location",
-    "location": "qualification",
-    "qualification": "form",
 }
 
 PRODUCT_NUMBER_MAP: dict[str, str] = {
@@ -122,14 +127,49 @@ def _resolve_product_key(raw_key: str) -> str | None:
     return None
 
 
+# Aliases that name one product inside free text. Bare numbers ("592") are left out: in a
+# sentence they are too often prices or sizes.
+_TEXT_ALIASES: dict[str, str] = {
+    **{key.replace("_", " "): key for key in KHIND_PRODUCT_USPS},
+    **{alias: key for alias, key in PRODUCT_ALIAS_MAP.items() if not alias.isdigit()},
+}
+_TEXT_ALIAS_PATTERNS = [
+    (re.compile(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])"), key)
+    for alias, key in sorted(_TEXT_ALIASES.items(), key=lambda item: -len(item[0]))
+]
+
+
+def find_product_keys(text: str) -> list[str]:
+    """Return the product keys named in free text, in order of appearance.
+
+    Longer aliases win ("washer dryer" is not also read as "dryer"). Used to limit a
+    product search to the documents of the products the query names.
+    """
+    lowered = (text or "").lower()
+    taken: list[tuple[int, int]] = []
+    found: list[tuple[int, str]] = []
+    for pattern, key in _TEXT_ALIAS_PATTERNS:
+        for match in pattern.finditer(lowered):
+            start, end = match.span()
+            if any(start < t_end and t_start < end for t_start, t_end in taken):
+                continue
+            taken.append((start, end))
+            found.append((start, key))
+    keys: list[str] = []
+    for _, key in sorted(found):
+        if key not in keys:
+            keys.append(key)
+    return keys
+
+
 def set_product_interest(product_key: str, tool_context: ToolContext) -> dict:
     """Select the KHIND product the customer wants.
 
     Call when the customer selects or names a product (canonical key, product number
-    1-8, or model name), at any stage. A first selection moves the journey to the
-    location step, so ask for the postcode and installation area next. The system
-    sends the product USP and media automatically: never write, repeat or summarise
-    the USP yourself.
+    1-8, or model name), at any stage, including a product picked earlier. A first
+    selection moves the journey to the location step: check a place the customer already
+    gave, otherwise ask for the postcode and installation area. The system sends the
+    product USP and media automatically: never write, repeat or summarise the USP yourself.
     """
     selected_product = _resolve_product_key(product_key)
     if not selected_product:
@@ -169,20 +209,55 @@ def set_product_interest(product_key: str, tool_context: ToolContext) -> dict:
     }
     if is_first_pitch:
         result["usp_sent_automatically"] = True
-        result["reply_rule"] = (
-            "The system sends this product's USP and media automatically. Do not write "
-            "any product description or feature list. Reply only with the pending step's question."
-        )
+        result["reply_rule"] = _first_pick_reply_rule(tool_context.state.get("purchase_stage"))
         result["media_delivery"] = "trigger"
     return result
 
 
-def advance_purchase_stage(tool_context: ToolContext) -> dict:
-    """Move the sales journey from the location step to the employment step.
+def _first_pick_reply_rule(stage: str | None) -> str:
+    rule = (
+        "The system sends this product's USP and media automatically. Do not write any product "
+        "description, feature list or comment about the product."
+    )
+    if stage == "location":
+        # A place in the same message is checked now, not asked for again.
+        rule += (
+            " If the customer's message also gives a place (postcode, town, state or country), "
+            "call advance_purchase_stage with it now."
+        )
+    return rule + (
+        " If the customer also asked a specific question (price, spec, warranty), answer only "
+        "that in 1-2 sentences using query_product_info. Apart from that, reply ONLY with the "
+        "pending step's question."
+    )
 
-    Call once the customer's installation area is confirmed covered. Product
-    selection is handled by set_product_interest, which moves the journey to the
-    location step.
+
+_ASK = {
+    "need_location": LOCATION_QUESTION,
+    "need_state": POSTCODE_QUESTION,
+}
+
+
+def advance_purchase_stage(
+    tool_context: ToolContext,
+    postcode: str = "",
+    town: str = "",
+    state: str = "",
+) -> dict:
+    """Check delivery coverage for the customer's area and, if covered, move to the employment step.
+
+    Call whenever the customer gives any location. Pass only what the customer wrote:
+    postcode = the 5-digit postcode; town = the town or area name; state = the Malaysian
+    state (infer it from the town, e.g. Kajang -> Selangor) or the country if outside
+    Malaysia. Never work out a town from a postcode.
+
+    Act on the returned status:
+    - "ok": covered. The next instructions give the reply.
+    - "not_covered": call escalate_to_live_agent(label="coverage-unsupported-alternative")
+      first, then send the not-covered line with `area`.
+    - "need_town" / "need_location": no verdict yet; ask only the question in `ask`.
+    - "need_state": call again with the state if you know it from the town; otherwise ask
+      only the question in `ask`.
     """
     current_stage = tool_context.state.get("purchase_stage", "discovery")
     if not tool_context.state.get("product_interest"):
@@ -191,24 +266,54 @@ def advance_purchase_stage(tool_context: ToolContext) -> dict:
             "message": "No product selected yet. Ask the customer to choose a product first.",
             "current_stage": current_stage,
         }
-    if current_stage in ("discovery", "product"):
-        # Sessions saved before 2026-09-24 can sit here with a product already chosen.
-        # They are on the location step.
-        current_stage = "location"
-    next_stage = _NEXT_STAGE.get(current_stage)
-    if not next_stage:
+    # The reply carries this turn's verdict or question (see insert_pending_usp).
+    tool_context.state[REPLY_FACTS_KEY] = tool_context.invocation_id
+    at_location_step = current_stage in LOCATION_STEP_STAGES
+    if not at_location_step and not any(value.strip() for value in (postcode, town, state)):
         return {
-            "status": "error",
-            "message": f"Cannot advance from '{current_stage}'.",
-            "current_stage": current_stage,
+            "status": "ok",
+            "coverage": "already_confirmed",
+            "message": "Coverage is already confirmed. Continue with the pending step.",
         }
 
-    tool_context.state["purchase_stage"] = next_stage
-    return {
-        "status": "ok",
-        "previous_stage": current_stage,
-        "new_stage": next_stage,
-    }
+    # Fill gaps from an earlier unfinished answer, so "Kapit" joins an earlier "96800".
+    draft = dict(tool_context.state.get("location_draft") or {})
+    postcode = postcode.strip() or draft.get("postcode", "")
+    state = state.strip() or draft.get("state", "")
+    verdict = check_coverage(postcode, town.strip(), state)
+
+    if verdict.status.startswith("need_"):
+        tool_context.state["location_draft"] = {"postcode": postcode, "state": state}
+        ask = _ASK.get(verdict.status) or TOWN_QUESTION.format(
+            region=REGION_NAMES.get(verdict.region, "Sabah/Sarawak")
+        )
+        return {
+            "status": verdict.status,
+            "ask": ask,
+            "message": "No coverage verdict yet. Ask only the question in `ask`.",
+        }
+
+    tool_context.state["location_draft"] = {}
+    tool_context.state["customer_location"] = verdict.location
+    if verdict.status == "not_covered":
+        return {
+            "status": "not_covered",
+            "area": verdict.area,
+            "message": (
+                "Area not covered. Call escalate_to_live_agent(label="
+                "'coverage-unsupported-alternative') first, then send the not-covered line with `area`."
+            ),
+        }
+    if at_location_step:
+        tool_context.state["purchase_stage"] = "qualification"
+        return {
+            "status": "ok",
+            "coverage": "covered",
+            "previous_stage": "location",
+            "new_stage": "qualification",
+            "area": verdict.area,
+        }
+    return {"status": "ok", "coverage": "covered", "area": verdict.area}
 
 
 def mark_application_form_sent(tool_context: ToolContext) -> dict:

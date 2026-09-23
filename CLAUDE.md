@@ -14,41 +14,67 @@ Strictly linear, one step at a time:
 2. Product pick: `set_product_interest` moves the stage to `location`. The webhook sends 2 images
    and 1 video once per product, then one text message: the approved USP on top and the postcode
    and area question below. Code inserts the USP; the model only writes the question.
-3. Coverage is checked against the fixed lists in the coverage fragment, not RAG.
-   - Not covered: `escalate_to_live_agent("coverage-unsupported-alternative")`, then the "nanti" line.
-   - Covered: `advance_purchase_stage()` (location to qualification), then the covered line and
-     "bekerja sekarang?".
-   - Unclear area (only a state, or a Sabah/Sarawak postcode without a town): ask for the town.
+3. Coverage is decided in code (`apps/services/coverage.py`) from KHIND's fixed lists, not by the
+   model and not by RAG. The model passes what the customer wrote to
+   `advance_purchase_stage(postcode, town, state)`, which returns a status:
+   - `ok` (covered): location moves to qualification, then the covered line and "bekerja sekarang?".
+   - `not_covered`: `escalate_to_live_agent("coverage-unsupported-alternative")`, then the "nanti" line.
+   - `need_town` (Sabah/Sarawak without a town), `need_state` (a town with no state or postcode),
+     or `need_location`: the agent asks the returned question. A Peninsular state alone is covered.
 4. Not working (including students, pensioners, "kawan yang kerja nak ambil"):
    `escalate_to_live_agent("not-working")` plus one polite line. Working (including self-employed
    and gig work): the approved RM1 line "Pendaftaran hanya RM1, tiada bayaran lain sekarang. Jom
-   semak kelayakan dulu?" This working/not-working split still needs the user's confirmation.
+   semak kelayakan dulu?" The user confirmed this split on 2026-09-24.
 5. Customer agrees: `mark_application_form_sent()`, the fixed BORANG once, then
-   `save_application_details` asks only for missing fields.
+   `save_application_details` asks only for missing fields. When it returns `complete`, the reply is
+   the fixed `APPLICATION_COMPLETE_LINE`, which asks for the IC photos.
 
 At any step, a product question gets a 1-2 sentence `query_product_info` answer, then the pending
-step's question again. Naming another product calls `set_product_interest` (USP and media once)
-and keeps the current stage. There is no Q&A stage and no payslip question any more.
+step's question again. A fact missing from the documents gets the fixed `KB_GAP_LINE` ("Pegawai kami
+akan sahkan …"), not a handoff; `rag-error` is only for a failed retrieval. Naming another product,
+including one picked earlier, calls `set_product_interest` (USP and media once) and keeps the current
+stage. There is no Q&A stage and no payslip question any more.
 
 ## Where the flow is enforced
 
 - `apps/tools/session_tools.py`
   - `set_product_interest`: moves `discovery`/`product` to `location`; later stages stay put. On a
     first pitch it queues the key in state `pending_usp_products` and returns
-    `usp_sent_automatically` plus a `reply_rule`. It never returns the USP text.
-  - `advance_purchase_stage`: errors when no product is set. It treats a legacy `product` stage
-    (or `discovery` with a product) as `location`, so it always lands on `qualification`.
+    `usp_sent_automatically` plus a stage-aware `reply_rule` (at the location step: check a place
+    given in the same message). It never returns the USP text.
+  - `advance_purchase_stage(postcode, town, state)`: the coverage check (see `coverage.py`). Errors
+    when no product is set. Writes `customer_location` (read by the Chatwoot handoff note) and keeps
+    a partial answer in `location_draft`, so "Kapit" joins an earlier "96800". Only the location
+    step moves the stage (legacy `product`/`discovery` count as location). Later, a call with no
+    place is a no-op.
+  - `find_product_keys(text)`: the products named in free text (longest alias first, no bare
+    numbers). `query_product_info` uses it to choose the document to search.
+- `apps/services/coverage.py`: `check_coverage`, with the Sabah/Sarawak town lists, town aliases
+  (KK, Mukah …), postcode ranges and state aliases. The lists are no longer in the prompt.
+- `apps/tools/rag_tool.py`: searches only the corpus file of the product named in the query, else
+  of the active product (`top_k=8`, the whole document); with no product, the whole corpus
+  (`top_k=3`). `PRODUCT_DOCUMENTS` maps keys to file names; the newest duplicate wins. Only `ok`
+  results are cached.
 - `apps/prompts/khind_assembler.py`: no product gives the discovery fragment;
-  `qualification`/`form` gives closing; anything else gives coverage.
-- `apps/prompts/khind_prompts.py`: core rules (section "Aliran Jualan", the 1-8 product key map),
-  the discovery, coverage and closing fragments, and `HANDOFF_FALLBACK_LINES`. All fixed
-  customer-facing text lives here.
+  `qualification`/`form` gives closing; anything else gives coverage. The Current State block has
+  a `Pending step` line built from state (escalated, product, stage, form sent, form complete).
+- `apps/prompts/khind_prompts.py`: core rules (section "Aliran Jualan", the 1-8 product key map,
+  `PRODUCT_MENU`), the discovery, coverage and closing fragments, `HANDOFF_FALLBACK_LINES`, and the
+  fixed questions and lines (`LOCATION_QUESTION`, `KB_GAP_LINE`, `APPLICATION_COMPLETE_LINE` …).
+  All fixed customer-facing text lives here.
 - `apps/services/replies.py`
+  - `drop_text_beside_coverage_call` (after-model callback): removes text written in the same
+    response as an `advance_purchase_stage` call, before the verdict exists.
   - `insert_pending_usp` (after-model callback): puts each pending USP, word for word, on top of
-    the turn's first text reply. It strips any product feature block the model wrote itself.
+    the turn's first text reply. It strips any product feature block the model wrote itself. On a
+    plain pick it keeps only the question: `LOCATION_QUESTION` at the location step, else the
+    model's closing question. A pick is not plain when `query_product_info` or
+    `advance_purchase_stage` ran in the same turn; both set `reply_facts_invocation` to the turn's
+    id. A turn that escalated gets no USP.
   - `build_reply` (used by `run_turn`): keeps text written alongside tool calls, skips exact
     repeats, allows one handoff line per turn, and falls back to the label's fixed line.
-- `apps/agent.py`: registers the callback; `max_output_tokens=2048`, `thinking_budget=1024`.
+- `apps/agent.py`: registers both callbacks, in that order; `max_output_tokens=2048`,
+  `thinking_budget=1024`.
 - `apps/webhook.py`: media first (waits at most 20 s), then text, then `set_conversation_pending`.
   An upload that finishes late sets pending again, unless the turn escalated.
 - `apps/tools/escalation_tool.py`: labels are `coverage-unsupported-alternative`, `not-working`,
@@ -62,33 +88,64 @@ and keeps the current stage. There is no Q&A stage and no payslip question any m
 - `is_final_response()` drops text the model writes in the same step as a tool call. Always build
   replies with `build_reply`.
 - Do not hand the model USP text to copy. In stored dev sessions it paraphrased the USP every time,
-  and in tests it sometimes wrote a second USP with claims not in the approved text.
+  and in tests it sometimes wrote a second USP with claims not in the approved text. After a pick
+  it also adds praise or invented claims ("pilihan popular", "jimat elektrik sehingga 50%") in
+  almost every reply, whatever the prompt says (0 of 15 clean on 2026-09-24). That is why
+  `insert_pending_usp` keeps only the question on a plain pick.
 - Gemini 2.5 counts thinking tokens against `max_output_tokens`. Keep the thinking budget capped.
-- `CLOSING_FRAGMENT_RAW` is an f-string, so literal braces added to it must be doubled.
+- `KHIND_CORE_RAW` and the discovery, coverage and closing fragments are f-strings, so literal
+  braces added to them must be doubled.
+- The vertexai SDK's regional clients ignore `GOOGLE_CLOUD_LOCATION`; they read
+  `GOOGLE_CLOUD_REGION` and default to us-central1. `vrag.list_files` then fails for the
+  asia-southeast1 corpus, so `rag_tool` calls `vertexai.init` with the corpus's own region first.
+- ADK's `State` is not a Mapping: `dict(state)` raises `KeyError: 0`. Use `state.to_dict()`.
+- `after_model_callback` takes a list; ADK stops at the first callback that returns a response.
 - Local run from the repo root: `adk api_server --port 8000 --session_service_uri memory:// .` (or
   `adk web .`). The app name is `apps`. The server caches the agent, so restart it after edits.
   It shows the real reply text but not media. Without `memory://`, sessions go into
-  `apps/.adk/session.db`. Stop it with `pkill -f "[a]dk api_server"` so pkill does not match itself.
+  `apps/.adk/session.db`. Stop it with `pkill -f "[a]dk api_server"` so pkill does not match itself,
+  and never in the same shell command as a restart: the restart text matches the pattern and pkill
+  kills its own shell. For verification, run it on port 8001
+  (`KHIND_API_BASE=http://127.0.0.1:8001` for `scenarios.py`) so ADK Web can stay on 8000.
 
 ## Open issues (as of 2026-09-24; update as they are fixed)
 
-- Smoke test v2 (2026-09-24, Astra in ADK Web): 53 of 62 rows pass, no regressions against
-  2026-09-20. Failing rows are A3, B10, B11, C2, D4, D5, D6, E4 and G6. Results, fix hypotheses and
-  next steps are in `handoff/2026-09-24-khind-sales-flow.md`.
+- Smoke test v2 (2026-09-24, Astra in ADK Web): 53 of 62 rows passed on commit `cc153b1`, and an
+  audit of the session database confirmed every verdict. The 9 failures (A3, B10, B11, C2, D4, D5,
+  D6, E4, G6) are fixed in the next commit and pass offline checks and scripted real-Gemini chats
+  (`handoff/verification/fix_run_2026-09-24.txt`). The full 62-row Astra rerun is still to do,
+  against the regenerated v2 sheet. Status and next steps: `handoff/2026-09-24-khind-sales-flow.md`.
 
 - The Chatwoot webhook fails on every message under ADK 1.31. `apps/runner.py` calls async session
   methods without `await`, so the first `patch_session_state` raises. Even when awaited,
   `get_session` returns a copy, `VertexAiSessionService` has no `update_session`, and
   `VERTEX_AI_AGENT_ENGINE_ID` in `.env` is never read. After the fix, check that the catalog menu
   and the model's own numbered list do not both reach the customer.
-- RAG prices are unreliable. Answers mix figures from other products' documents or quote figures
-  that are not in the corpus. Restricting results to the active product would help.
+- RAG corpus data (retrieval itself is now limited to the product's document):
+  - `khind_acson_knowledge_base.md` and `khind_dhp90_drymaster_heatpump_dryer_knowledge_base.md`
+    were each uploaded twice. The older copies (2026-09-12 03:15Z and 03:32Z) differ from the newer
+    ones and should be deleted. Until then the code uses the newest.
+  - The DryMaster document holds two conflicting price tables (RM85/month for 48 months, against
+    RM105 for 48 and RM135 for 36). KHIND must confirm which is current.
+  - The aircond document has no monthly price, so the agent sends the missing-fact line.
 - In the form step the model repeated a customer's name, despite the rule against echoing details.
 - The `not-working` label must be created in Chatwoot so these handoffs show in filters.
-- `customer_location` is never written, so the handoff note shows "-". `escalated` never resets.
+- `escalated` never resets.
+- The IC-photo step never ends: `webhook.py` drops messages that hold only images.
+- A question with no product named and none active (for example "ada promosi?" at discovery)
+  still searches the whole corpus.
 - `KHIND_MASTERPROMPT.md` and `TASK_TRACKER.md` still describe the old flow.
 
 ## History
 
 - 2026-09-24: sales flow rewritten to product, location, kerja, RM1, form. Details, verification
   results and next steps: `handoff/2026-09-24-khind-sales-flow.md`.
+- 2026-09-24 (later): the v2 smoke test was audited and its 9 failures fixed:
+  - coverage decided in code;
+  - retrieval limited to the product's document;
+  - a pending-step line in the prompt;
+  - the missing-fact line instead of a `rag-error` handoff;
+  - a fixed form-complete line;
+  - the first-pick guard.
+
+  The escalation tool's `dict(state)` crash was also fixed.

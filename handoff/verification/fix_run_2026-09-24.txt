@@ -1,0 +1,467 @@
+# Verification of the smoke-test fixes, 2026-09-24
+# unit_checks.py: ALL 118 CHECKS PASSED
+# webhook_order.py: ALL WEBHOOK ORDER CHECKS PASSED
+# scenarios.py (real Gemini, adk api_server on port 8001): run 3: ==== 49/49 checks passed ====; run 4: ==== 49/49 checks passed ====
+# Full transcript of run 4 below.
+
+apps: ['apps', 'docs', 'graphify-out', 'handoff']
+
+===== Happy path =====
+
+>>> hi
+[tools: []] [stage: None] [product: None] [escalated: None/None]
+Hai! 👋 Saya Penasihat Jualan KHIND Malaysia. Kami ada skim sewa beli mampu milik untuk bantu cik/tuan miliki perkakas rumah idaman.
+
+Berikut adalah senarai produk kami:
+❄️ *Peti Sejuk*
+1️⃣ ChillMaster 592L (Side-by-Side)
+2️⃣ ChillMaster Lite 480L (2 Pintu)
+3️⃣ ChillMaster X 466L (4 Pintu)
+
+🧺 *Mesin Basuh & Pengering*
+4️⃣ 2-in-1 Washer Dryer 11KG/7KG (Cuci & Kering)
+5️⃣ Front Load Washer 9KG (Basuh Sahaja)
+6️⃣ EcoWash Top Load 15KG (Muatan Besar Toto)
+7️⃣ DryMaster Heat Pump Dryer 9KG (Pengering)
+
+🌬️ *Penyaman Udara*
+8️⃣ KOOL Series Inverter Aircond (1.0HP - 2.0HP)
+
+Cik/tuan berminat dengan model nombor berapa ya? (Boleh balas nombor 1-8 atau pilih dari menu di bawah 😊)
+PASS hi: list shown, still discovery
+
+>>> 8
+[tools: ['set_product_interest']] [stage: location] [product: aircond_kool_series] [escalated: None/None]
+*KHIND KOOL Series Air Conditioner* ✨
+✅ Inverter + 5 Bintang Tenaga - sejuk konsisten, kurang bunyi dan lebih jimat elektrik.
+✅ Silver Ion Ag+ Filter - membantu menyingkirkan virus, bakteria dan fungus sehingga 99%.
+✅ Penyejukan pantas & berkuasa - tersedia dalam 1.0HP, 1.5HP dan 2.0HP, sehingga 19,000 BTU/j.
+✅ Dilengkapi Ultra PCB Protection + Blue Fin anti-hakisan, termasuk pemasangan dan servis profesional oleh juruteknik Acson.
+
+Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
+PASS 8: exact aircond USP once, no extra feature block
+PASS 8: location question, stage location
+
+>>> 43000 Kajang
+[tools: ['advance_purchase_stage']] [stage: qualification] [product: aircond_kool_series] [escalated: None/None]
+Baik, kawasan *Kajang, Selangor* ada dalam liputan penghantaran & pemasangan kami! 🚚✨ Boleh saya tahu cik/tuan bekerja sekarang?
+PASS Kajang: covered line + kerja question
+PASS Kajang: stage qualification, not escalated
+
+>>> ya saya kerja
+[tools: []] [stage: qualification] [product: aircond_kool_series] [escalated: None/None]
+Terbaik! 👍 *Pendaftaran hanya RM1*, tiada bayaran lain sekarang. Jom semak kelayakan dulu?
+PASS kerja: RM1 line, no escalation
+
+>>> ok
+[tools: ['mark_application_form_sent']] [stage: qualification] [product: aircond_kool_series] [escalated: None/None]
+Sila lengkapkan borang permohonan di bawah ya:
+
+BORANG PERMOHONAN KHIND
+=========================
+
+Produk : KOOL Series Inverter Aircond
+
+PERSONAL DETAIL
+=========================
+1. Nama Penuh (Ikut IC) :
+2. No IC :
+3. No Whatsapp :
+4. Email :
+5. Alamat Pemasangan :
+6. Pekerjaan :
+7. Nama Syarikat :
+8. Tarikh bermula :
+
+BUTIRAN KECEMASAN
+=========================
+Nama :
+No. HP :
+Hubungan :
+
+DOKUMEN DIPERLUKAN
+=========================
+Gambar IC depan belakang
+
+Boleh cik/tuan isikan butiran ini? 😊
+PASS ok: BORANG sent once
+
+>>> Nama saya Ali bin Abu, IC 000000-00-0000, email ali@example.com
+[tools: ['save_application_details']] [stage: qualification] [product: aircond_kool_series] [escalated: None/None]
+Terima kasih, Ali.
+
+Boleh berikan *No Whatsapp* cik/tuan?
+PASS fields: saved, no full form resent
+PASS fields: asks for a missing field
+
+===== Not covered =====
+
+>>> 1
+[tools: ['set_product_interest']] [stage: location] [product: chillmaster_592l] [escalated: None/None]
+*KHIND ChillMaster 592L* ✨
+✅ Kapasiti besar 592L dengan susunan rak boleh laras, sesuai untuk keluarga besar.
+✅ Dual Inverter + No Frost - jimat elektrik, senyap dan sejuk sekata tanpa ais tebal.
+✅ Smart Convertible Zone - boleh tukar fungsi ruang simpanan dari -3C hingga +5C.
+✅ Dilengkapi water dispenser, panel sentuh dengan child lock, lampu LED terang dan sistem Metal Cooling.
+
+Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
+PASS 1: exact 592L USP + location question
+
+>>> Kapit, Sarawak
+[tools: ['advance_purchase_stage', 'escalate_to_live_agent']] [stage: location] [product: chillmaster_592l] [escalated: True/coverage-unsupported-alternative]
+Maaf sangat cik/tuan, kawasan Kapit, Sarawak belum ada liputan KHIND buat masa ini. 🙏 Pegawai kami akan hubungi cik/tuan nanti ya.
+PASS Kapit: escalated with coverage label
+PASS Kapit: one 'nanti' handoff line, no partner brand
+
+===== Not working: tak kerja =====
+
+>>> 2
+[tools: ['set_product_interest']] [stage: location] [product: chillmaster_lite_480l] [escalated: None/None]
+*KHIND ChillMaster Lite 480L* ✨
+✅ Kapasiti besar 480L - ruang simpanan luas untuk seisi keluarga.
+✅ Inverter + 5 Star Energy Rating - penyejukan stabil dan lebih jimat elektrik.
+✅ No Frost + Multi Air Flow - sejuk sekata tanpa pembentukan ais.
+✅ Crisper dengan kawalan kelembapan - buah dan sayur kekal segar lebih lama.
+
+Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
+
+>>> Shah Alam
+[tools: ['advance_purchase_stage']] [stage: qualification] [product: chillmaster_lite_480l] [escalated: None/None]
+Baik, kawasan *Shah Alam, Selangor* ada dalam liputan penghantaran & pemasangan kami! 🚚✨ Boleh saya tahu cik/tuan bekerja sekarang?
+PASS tak kerja: covered, stage qualification
+
+>>> tak kerja
+[tools: ['escalate_to_live_agent']] [stage: qualification] [product: chillmaster_lite_480l] [escalated: True/not-working]
+Faham, cik/tuan. Skim ini memerlukan pemohon yang bekerja. Saya sambungkan cik/tuan kepada pegawai kami untuk bantuan lanjut ya 🙏
+PASS tak kerja: escalated with not-working
+PASS tak kerja: exactly one handoff line
+
+===== Not working: friend works =====
+
+>>> 3
+[tools: ['set_product_interest']] [stage: location] [product: chillmaster_x_466l] [escalated: None/None]
+*KHIND ChillMaster X 466L* ✨
+✅ Kapasiti besar 466L dengan rekaan moden Multi-Door 4 pintu.
+✅ Dual Inverter - lebih jimat elektrik & operasi senyap.
+✅ Ruang simpanan luas, mudah disusun & penyejukan sekata kekalkan kesegaran.
+✅ Smart Convertible Zone - ruang boleh dilaraskan mengikut keperluan.
+✅ Rekaan mewah dan premium, amat sesuai untuk dapur moden.
+
+Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
+
+>>> Petaling Jaya
+[tools: ['advance_purchase_stage']] [stage: qualification] [product: chillmaster_x_466l] [escalated: None/None]
+Baik, kawasan *Petaling Jaya, Selangor* ada dalam liputan penghantaran & pemasangan kami! 🚚✨ Boleh saya tahu cik/tuan bekerja sekarang?
+PASS friend works: covered, stage qualification
+
+>>> saya tak kerja, kawan saya yang kerja nak ambil
+[tools: ['escalate_to_live_agent']] [stage: qualification] [product: chillmaster_x_466l] [escalated: True/not-working]
+Faham, cik/tuan. Skim ini memerlukan pemohon yang bekerja. Saya sambungkan cik/tuan kepada pegawai kami untuk bantuan lanjut ya 🙏
+PASS friend works: escalated with not-working
+PASS friend works: exactly one handoff line
+
+===== Linear rule =====
+
+>>> 4
+[tools: ['set_product_interest']] [stage: location] [product: washer_dryer_11_7] [escalated: None/None]
+*2-in-1 Washer Dryer KHIND 11KG/7KG* ✨
+✅ Kapasiti besar - 11KG basuh & 7KG kering
+✅ Steam Wash - bantu bersihkan kotoran dan kurangkan bakteria
+✅ 18 program cucian untuk pelbagai jenis pakaian
+✅ Wash & Dry siap dalam 1 jam
+✅ Panel Fully Digital, mudah kawal dengan satu sentuhan
+✅ BLDC Dual Inverter - lebih cekap dan jimat tenaga
+✅ Rekaan moden dengan fungsi Touch & Start
+
+Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
+
+>>> berapa harga?
+[tools: ['query_product_info']] [stage: location] [product: washer_dryer_11_7] [escalated: None/None]
+Harga untuk *2-in-1 Washer Dryer 11KG/7KG* adalah RM3,500 untuk pembelian terus, atau melalui skim Sewa Beli (RTO) pada RM125 sebulan selama 36 bulan. Ada promosi terhad RM99 sebulan untuk 6 bulan pertama, kemudian RM125 sebulan untuk baki 30 bulan.
+
+Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
+PASS price q: answered, location question repeated, stage unchanged
+PASS price q: no USP resent
+
+===== Product switch in qualification =====
+
+>>> 8
+[tools: ['set_product_interest']] [stage: location] [product: aircond_kool_series] [escalated: None/None]
+*KHIND KOOL Series Air Conditioner* ✨
+✅ Inverter + 5 Bintang Tenaga - sejuk konsisten, kurang bunyi dan lebih jimat elektrik.
+✅ Silver Ion Ag+ Filter - membantu menyingkirkan virus, bakteria dan fungus sehingga 99%.
+✅ Penyejukan pantas & berkuasa - tersedia dalam 1.0HP, 1.5HP dan 2.0HP, sehingga 19,000 BTU/j.
+✅ Dilengkapi Ultra PCB Protection + Blue Fin anti-hakisan, termasuk pemasangan dan servis profesional oleh juruteknik Acson.
+
+Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
+
+>>> Kajang, Selangor
+[tools: ['advance_purchase_stage']] [stage: qualification] [product: aircond_kool_series] [escalated: None/None]
+Baik, kawasan *Kajang, Selangor* ada dalam liputan penghantaran & pemasangan kami! 🚚✨ Boleh saya tahu cik/tuan bekerja sekarang?
+
+>>> eh sebenarnya saya nak peti ais 592
+[tools: ['set_product_interest']] [stage: qualification] [product: chillmaster_592l] [escalated: None/None]
+*KHIND ChillMaster 592L* ✨
+✅ Kapasiti besar 592L dengan susunan rak boleh laras, sesuai untuk keluarga besar.
+✅ Dual Inverter + No Frost - jimat elektrik, senyap dan sejuk sekata tanpa ais tebal.
+✅ Smart Convertible Zone - boleh tukar fungsi ruang simpanan dari -3C hingga +5C.
+✅ Dilengkapi water dispenser, panel sentuh dengan child lock, lampu LED terang dan sistem Metal Cooling.
+
+Boleh saya tahu cik/tuan bekerja sekarang?
+PASS switch: exact 592L USP once, no extra feature block
+PASS switch: kerja question repeated, stage qualification
+
+===== Legacy session at stage 'product' =====
+
+>>> Kajang, Selangor
+[tools: ['advance_purchase_stage']] [stage: qualification] [product: aircond_kool_series] [escalated: None/None]
+Baik, kawasan *Kajang, Selangor* ada dalam liputan penghantaran & pemasangan kami! 🚚✨ Boleh saya tahu cik/tuan bekerja sekarang?
+PASS legacy: ends in qualification with covered line
+
+===== A3: 592L price =====
+
+>>> 1
+[tools: ['set_product_interest']] [stage: location] [product: chillmaster_592l] [escalated: None/None]
+*KHIND ChillMaster 592L* ✨
+✅ Kapasiti besar 592L dengan susunan rak boleh laras, sesuai untuk keluarga besar.
+✅ Dual Inverter + No Frost - jimat elektrik, senyap dan sejuk sekata tanpa ais tebal.
+✅ Smart Convertible Zone - boleh tukar fungsi ruang simpanan dari -3C hingga +5C.
+✅ Dilengkapi water dispenser, panel sentuh dengan child lock, lampu LED terang dan sistem Metal Cooling.
+
+Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
+PASS A2: USP then the location question, no model comment
+
+>>> Berapa harga ansuran bulanan untuk model ni?
+[tools: ['query_product_info']] [stage: location] [product: chillmaster_592l] [escalated: None/None]
+Untuk model *ChillMaster 592L*, ansuran bulanan bermula dari *RM99/bulan* untuk pelan Super Saver atau *RM119/bulan* untuk pelan Smart Value, kedua-duanya selama 60 bulan. 😊
+
+Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
+PASS A3: no Lite 480L prices (RM75/RM95)
+PASS A3: 592L prices from its own document (RM99/RM119)
+PASS A3: location question again, stage location, no handoff
+
+===== B10: postcode without a town =====
+
+>>> 1
+[tools: ['set_product_interest']] [stage: location] [product: chillmaster_592l] [escalated: None/None]
+*KHIND ChillMaster 592L* ✨
+✅ Kapasiti besar 592L dengan susunan rak boleh laras, sesuai untuk keluarga besar.
+✅ Dual Inverter + No Frost - jimat elektrik, senyap dan sejuk sekata tanpa ais tebal.
+✅ Smart Convertible Zone - boleh tukar fungsi ruang simpanan dari -3C hingga +5C.
+✅ Dilengkapi water dispenser, panel sentuh dengan child lock, lampu LED terang dan sistem Metal Cooling.
+
+Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
+
+>>> Poskod 96800
+[tools: ['advance_purchase_stage']] [stage: location] [product: chillmaster_592l] [escalated: None/None]
+Boleh kongsikan nama bandar atau kawasan pemasangan cik/tuan di Sarawak? 😊
+PASS B10: no verdict, asks for the town, stage location
+
+>>> Kapit
+[tools: ['advance_purchase_stage', 'escalate_to_live_agent']] [stage: location] [product: chillmaster_592l] [escalated: True/coverage-unsupported-alternative]
+Maaf sangat cik/tuan, kawasan Kapit, Sarawak belum ada liputan KHIND buat masa ini. 🙏 Pegawai kami akan hubungi cik/tuan nanti ya.
+PASS B10: then 'Kapit' -> not-covered handoff
+
+===== B11: product and area in one message =====
+
+>>> Saya nak aircond, saya duduk Kajang Selangor
+[tools: ['set_product_interest', 'advance_purchase_stage']] [stage: qualification] [product: aircond_kool_series] [escalated: None/None]
+*KHIND KOOL Series Air Conditioner* ✨
+✅ Inverter + 5 Bintang Tenaga - sejuk konsisten, kurang bunyi dan lebih jimat elektrik.
+✅ Silver Ion Ag+ Filter - membantu menyingkirkan virus, bakteria dan fungus sehingga 99%.
+✅ Penyejukan pantas & berkuasa - tersedia dalam 1.0HP, 1.5HP dan 2.0HP, sehingga 19,000 BTU/j.
+✅ Dilengkapi Ultra PCB Protection + Blue Fin anti-hakisan, termasuk pemasangan dan servis profesional oleh juruteknik Acson.
+
+Baik, kawasan Kajang, Selangor ada dalam liputan penghantaran & pemasangan kami! 🚚✨ Boleh saya tahu cik/tuan bekerja sekarang?
+PASS B11: exact aircond USP once
+PASS B11: covered line + kerja question, no location question
+PASS B11: stage qualification, not escalated
+
+===== C2: product named in a question =====
+
+>>> Ada aircond tak?
+[tools: ['set_product_interest']] [stage: location] [product: aircond_kool_series] [escalated: None/None]
+*KHIND KOOL Series Air Conditioner* ✨
+✅ Inverter + 5 Bintang Tenaga - sejuk konsisten, kurang bunyi dan lebih jimat elektrik.
+✅ Silver Ion Ag+ Filter - membantu menyingkirkan virus, bakteria dan fungus sehingga 99%.
+✅ Penyejukan pantas & berkuasa - tersedia dalam 1.0HP, 1.5HP dan 2.0HP, sehingga 19,000 BTU/j.
+✅ Dilengkapi Ultra PCB Protection + Blue Fin anti-hakisan, termasuk pemasangan dan servis profesional oleh juruteknik Acson.
+
+Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
+PASS C2: aircond picked
+PASS C2: exact aircond USP once + location question
+
+===== D4-D6: list, repeat question, item outside the list =====
+
+>>> 7
+[tools: ['set_product_interest']] [stage: location] [product: drymaster_9kg] [escalated: None/None]
+*KHIND DryMaster 9KG (Heat Pump Dryer)* ✨
+✅ Kapasiti pengeringan 9KG
+✅ Teknologi Heat Pump - lebih jimat tenaga
+✅ Suhu optimum menjaga warna & elak pakaian mengecut
+✅ Quick Dry 30 minit untuk muatan bawah 1KG
+✅ Delay Start & Smart Clean Reminder
+✅ Tidak memerlukan saluran pengudaraan keluar
+*(Tak perlu risau hujan atau pakaian lambat kering - masukkan baju, pilih tetapan terus siap! 👍)*
+
+Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
+PASS 7: USP then the location question, no model comment
+
+>>> Ada produk apa lagi?
+[tools: []] [stage: location] [product: drymaster_9kg] [escalated: None/None]
+Tentu, ini senarai produk KHIND yang kami ada:
+
+❄️ *Peti Sejuk*
+1️⃣ ChillMaster 592L (Side-by-Side)
+2️⃣ ChillMaster Lite 480L (2 Pintu)
+3️⃣ ChillMaster X 466L (4 Pintu)
+
+🧺 *Mesin Basuh & Pengering*
+4️⃣ 2-in-1 Washer Dryer 11KG/7KG (Cuci & Kering)
+5️⃣ Front Load Washer 9KG (Basuh Sahaja)
+6️⃣ EcoWash Top Load 15KG (Muatan Besar Toto)
+7️⃣ DryMaster Heat Pump Dryer 9KG (Pengering)
+
+🌬️ *Penyaman Udara*
+8️⃣ KOOL Series Inverter Aircond (1.0HP - 2.0HP)
+
+Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
+PASS D4: grouped list copied exactly
+PASS D4: location question (pending step), stage unchanged
+
+>>> Waranti berapa tahun untuk produk ni?
+[tools: ['query_product_info']] [stage: location] [product: drymaster_9kg] [escalated: None/None]
+Untuk *DryMaster Heat Pump Dryer 9KG*, waranti am adalah *2 tahun* dan waranti motor adalah *10 tahun*.
+
+Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
+PASS D5: location question again, not 'which product'
+
+>>> KHIND ada jual TV atau microwave tak?
+[tools: []] [stage: location] [product: drymaster_9kg] [escalated: None/None]
+Maaf cik/tuan, skim sewa beli kami hanya terhad kepada 8 produk utama dalam senarai kami sahaja. 🙏
+
+Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
+PASS D6: no brand-wide claim, no reference to an unseen list
+PASS D6: location question again
+
+===== E1: fact missing from the documents =====
+
+>>> What is the monthly price for the air conditioner?
+[tools: ['set_product_interest', 'query_product_info']] [stage: location] [product: aircond_kool_series] [escalated: None/None]
+*KHIND KOOL Series Air Conditioner* ✨
+✅ Inverter + 5 Bintang Tenaga - sejuk konsisten, kurang bunyi dan lebih jimat elektrik.
+✅ Silver Ion Ag+ Filter - membantu menyingkirkan virus, bakteria dan fungus sehingga 99%.
+✅ Penyejukan pantas & berkuasa - tersedia dalam 1.0HP, 1.5HP dan 2.0HP, sehingga 19,000 BTU/j.
+✅ Dilengkapi Ultra PCB Protection + Blue Fin anti-hakisan, termasuk pemasangan dan servis profesional oleh juruteknik Acson.
+
+Maaf, maklumat harga bulanan belum ada dalam sistem saya. Pegawai kami akan sahkan dengan cik/tuan nanti ya 🙏
+
+Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
+PASS E1: no handoff
+PASS E1: gap line (the aircond document has no monthly price)
+PASS E1: aircond picked, location question
+
+===== G6: back to an earlier product, with a question =====
+
+>>> 1
+[tools: ['set_product_interest']] [stage: location] [product: chillmaster_592l] [escalated: None/None]
+*KHIND ChillMaster 592L* ✨
+✅ Kapasiti besar 592L dengan susunan rak boleh laras, sesuai untuk keluarga besar.
+✅ Dual Inverter + No Frost - jimat elektrik, senyap dan sejuk sekata tanpa ais tebal.
+✅ Smart Convertible Zone - boleh tukar fungsi ruang simpanan dari -3C hingga +5C.
+✅ Dilengkapi water dispenser, panel sentuh dengan child lock, lampu LED terang dan sistem Metal Cooling.
+
+Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
+
+>>> Poskod 43000, Kajang Selangor
+[tools: ['advance_purchase_stage']] [stage: qualification] [product: chillmaster_592l] [escalated: None/None]
+Baik, kawasan *Kajang, Selangor* ada dalam liputan penghantaran & pemasangan kami! 🚚✨ Boleh saya tahu cik/tuan bekerja sekarang?
+
+>>> Sebenarnya saya lebih berminat dengan mesin basuh front load
+[tools: ['set_product_interest']] [stage: qualification] [product: front_load_9kg] [escalated: None/None]
+*KHIND Front Load Washer 9KG* ✨
+✅ Kapasiti basuhan 9KG
+✅ Jenis Front Load - cucian lebih menyeluruh
+✅ Sesuai untuk kegunaan harian seisi keluarga
+✅ Pelbagai pilihan program basuhan & lebih jimat air
+✅ Rekaan moden dan mudah digunakan
+✅ Boleh dipadankan dengan DryMaster 9KG untuk set dobi lengkap
+*(Model ini untuk BASUH sahaja, tiada fungsi pengering ya 😊)*
+
+Boleh saya tahu cik/tuan bekerja sekarang?
+
+>>> Ok balik pada peti ais 592L tadi, berapa berat dia?
+[tools: ['set_product_interest', 'query_product_info']] [stage: qualification] [product: chillmaster_592l] [escalated: None/None]
+Berat bersih *ChillMaster 592L* ialah *85kg*, manakala berat kasar (termasuk pembungkusan) adalah *95kg*.
+
+Boleh saya tahu cik/tuan bekerja sekarang?
+PASS G6: active product back to 592L
+PASS G6: 85 kg from the 592L document, no Lite 480L figures
+PASS G6: no handoff, kerja question, no USP repeat
+
+===== E4 / A10 / A11: after the form is complete =====
+
+>>> 1
+[tools: ['set_product_interest']] [stage: location] [product: chillmaster_592l] [escalated: None/None]
+*KHIND ChillMaster 592L* ✨
+✅ Kapasiti besar 592L dengan susunan rak boleh laras, sesuai untuk keluarga besar.
+✅ Dual Inverter + No Frost - jimat elektrik, senyap dan sejuk sekata tanpa ais tebal.
+✅ Smart Convertible Zone - boleh tukar fungsi ruang simpanan dari -3C hingga +5C.
+✅ Dilengkapi water dispenser, panel sentuh dengan child lock, lampu LED terang dan sistem Metal Cooling.
+
+Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
+
+>>> Poskod 43000, Kajang Selangor
+[tools: ['advance_purchase_stage']] [stage: qualification] [product: chillmaster_592l] [escalated: None/None]
+Baik, kawasan Kajang, Selangor ada dalam liputan penghantaran & pemasangan kami! 🚚✨ Boleh saya tahu cik/tuan bekerja sekarang?
+
+>>> Ya saya kerja swasta
+[tools: []] [stage: qualification] [product: chillmaster_592l] [escalated: None/None]
+Terbaik! 👍 *Pendaftaran hanya RM1*, tiada bayaran lain sekarang. Jom semak kelayakan dulu?
+
+>>> Ok jom semak
+[tools: ['mark_application_form_sent']] [stage: qualification] [product: chillmaster_592l] [escalated: None/None]
+Terima kasih! Sila lengkapkan borang permohonan di bawah ya:
+
+BORANG PERMOHONAN KHIND
+=========================
+
+Produk : ChillMaster 592L
+
+PERSONAL DETAIL
+=========================
+1. Nama Penuh (Ikut IC) :
+2. No IC :
+3. No Whatsapp :
+4. Email :
+5. Alamat Pemasangan :
+6. Pekerjaan :
+7. Nama Syarikat :
+8. Tarikh bermula :
+
+BUTIRAN KECEMASAN
+=========================
+Nama :
+No. HP :
+Hubungan :
+
+DOKUMEN DIPERLUKAN
+=========================
+Gambar IC depan belakang
+
+Boleh cik/tuan isikan butiran ini? 😊
+
+>>> Nama Ali bin Abu, No IC 900101015511, WhatsApp 0123456789, emel ali@example.com, alamat No 5 Jalan Bunga Kajang, teknisi di ABC Sdn Bhd mula Jan 2020. Kecemasan: Siti binti Ahmad, 0198887777, isteri
+[tools: ['save_application_details']] [stage: qualification] [product: chillmaster_592l] [escalated: None/None]
+Terima kasih, butiran permohonan cik/tuan sudah lengkap! 👍 Boleh hantar *gambar IC depan & belakang* sekarang?
+PASS A10: complete, fixed completion line, ends with a question
+PASS A10: no personal value echoed
+
+>>> Boleh hantar borang sekali lagi?
+[tools: []] [stage: qualification] [product: chillmaster_592l] [escalated: None/None]
+Maaf, borang permohonan sudah lengkap.
+
+Boleh hantar *gambar IC depan & belakang* sekarang?
+PASS A11: no second form, ends with a question
+
+==== 49/49 checks passed ====

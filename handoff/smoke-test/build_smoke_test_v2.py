@@ -4,6 +4,11 @@ Modelled on the 2026-09-20 package in the Obsidian vault ("Khind Test" folder): 
 (Smoke Test, Reference, Summary), same A-J column contract, plus K (severity, filled by the
 runner) and L (the 2026-09-20 result, for comparison).
 
+Updated after the first v2 run (2026-09-24, 53/62 on commit cc153b1): coverage is decided in
+code by advance_purchase_stage(postcode, town, state); product searches are limited to the
+product's own document; a missing fact gets the missing-fact line instead of a handoff; the
+form-complete reply is a fixed line.
+
 Fixed texts (USP blocks, handoff lines, BORANG) are read from apps/prompts/khind_prompts.py so
 the sheet cannot drift from the code. Run from the repo root:
 
@@ -47,6 +52,17 @@ assert COVERED in P.CLOSING_FRAGMENT_RAW and KERJAQ in P.CLOSING_FRAGMENT_RAW
 assert NOTCOV in P.COVERAGE_FRAGMENT_RAW
 assert RM1 in P.CLOSING_FRAGMENT_RAW
 assert NOTWORK in P.CLOSING_FRAGMENT_RAW
+GAP = P.KB_GAP_LINE
+DONE = P.APPLICATION_COMPLETE_LINE
+assert GAP in P.KHIND_CORE_RAW and DONE in P.CLOSING_FRAGMENT_RAW
+
+
+def adv(args: str, status: str) -> str:
+    """Expected coverage call, e.g. adv("postcode='43000', town='Kajang', state='Selangor'", "ok")."""
+    return f"advance_purchase_stage({args}) -> status {status}"
+
+
+ESC_COV = "escalate_to_live_agent(label='coverage-unsupported-alternative')"
 
 _start = P.CLOSING_FRAGMENT_RAW.index("BORANG PERMOHONAN KHIND")
 _end = P.CLOSING_FRAGMENT_RAW.index("Gambar IC depan belakang") + len("Gambar IC depan belakang")
@@ -127,13 +143,15 @@ ROWS = [
      "purchase_stage=location, pitched_products=['chillmaster_592l'], pending_usp_products=[].",
      "Fail"),
     ("A3", RA, "After A2. Stage = location", "Berapa harga ansuran bulanan untuk model ni?",
-     "RAG answer in 1-2 BM sentences, then the location question again. Every RM figure must come from a "
-     "chunk whose source is the 592L document (khind_rsf600a_chillmaster_592l_knowledge_base.md). That chunk "
-     "may hold no price: then the agent must say it will check or an officer will confirm, NOT quote other "
-     "models' prices (RM75/RM95 are ChillMaster Lite 480L prices). USP not repeated.",
-     "query_product_info(query mentions ChillMaster 592L) -> status ok",
-     "No figure from another product's document (check 'source' in the Function Response). Location "
-     "question repeated. Stage still location.",
+     "RAG answer in 1-2 BM sentences, then the location question again. The search covers only the 592L "
+     "document (khind_rsf600a_chillmaster_592l_knowledge_base.md), which gives RTO prices Super Saver "
+     "RM99/month and Smart Value RM119/month over 60 months (RM4,500 outright). Quote these. The missing-fact "
+     "line here is a Minor Fail, because the answer is in the document. NEVER RM75/RM95: those are "
+     "ChillMaster Lite 480L prices (Critical). USP not repeated. No handoff.",
+     "query_product_info(query mentions ChillMaster 592L) -> status ok, scope 'product', products "
+     "['chillmaster_592l']",
+     "Every chunk 'source' in the Function Response is the 592L document; no figure from another product. "
+     "Location question repeated. Stage still location; not escalated.",
      "Fail"),
     ("A4", RA, "After A3. Stage = location, area not given yet", "Ok saya berminat, macam mana nak apply?",
      f"Linear rule: says the next step is the coverage check and asks the location question again "
@@ -144,8 +162,10 @@ ROWS = [
     ("A5", RA, "After A4. Stage = location", "Poskod 43000, Kajang Selangor",
      f"COVERED (Semenanjung). Reply: \"{COVERED}\" with Kajang in place of [Kawasan/Poskod]. "
      "Asks whether the customer works; no payslip question.",
-     f"advance_purchase_stage() -> status ok, previous_stage 'location', new_stage 'qualification'. {NO_RAG}",
-     "Covered verdict; stage = qualification; no RAG call; kerja question asked (no 'slip gaji').",
+     adv("postcode='43000', town='Kajang', state='Selangor'", "ok")
+     + f", previous_stage 'location', new_stage 'qualification', area. {NO_RAG}",
+     "Covered verdict; stage = qualification; State customer_location set; no RAG call; kerja question asked "
+     "(no 'slip gaji').",
      "Fail"),
     ("A6", RA, "After A5. Stage = qualification", "Ya saya kerja swasta",
      f"Working, so the approved RM1 line: \"{RM1}\" (same meaning: pendaftaran hanya RM1, tiada bayaran lain "
@@ -180,17 +200,17 @@ ROWS = [
      "missing_fields shrinks correctly; application_details accumulates in State; PDPA: no echo.",
      "Pass"),
     ("A10", RA, "After A9", "Kecemasan: Siti binti Ahmad, 0198887777, isteri",
-     "Confirms the details are complete and gives the next step (IC photo, or an officer will follow up). "
-     "No personal data echoed.",
+     f"The fixed form-complete line, word for word: \"{DONE}\". No personal data echoed.",
      "save_application_details(emergency_contact_name, emergency_contact_phone, "
      "emergency_contact_relationship) -> status 'complete', complete=true, missing_fields empty",
-     "State: application_complete=true. Reply asks for the IC photo or confirms submission. PDPA: no echo.",
+     "State: application_complete=true. Reply = the form-complete line (ends with the IC-photo question). "
+     "PDPA: no echo.",
      "Pass"),
     ("A11", RA, "After A10 - duplicate-send guard", "Boleh hantar borang sekali lagi?",
-     "Does NOT resend the full blank form. Confirms the details were received and asks only for anything "
-     "outstanding (e.g. gambar IC depan belakang).",
+     "Does NOT resend the full blank form. Confirms the details were received and ends with the IC-photo "
+     f"question (\"{P.IC_PHOTO_QUESTION}\" or same meaning).",
      "mark_application_form_sent() -> status 'already_sent' (if called at all)",
-     "No second full form in the chat.",
+     "No second full form in the chat; ends with a question.",
      "Fail"),
     # --- B Coverage -------------------------------------------------------------------
     ("B1", RB, "New session", "Saya nak peti ais 4 pintu",
@@ -202,65 +222,65 @@ ROWS = [
     ("B2", RB, "After B1. Stage = location", "Saya di Kapit, Sarawak. Poskod 96800",
      f"NOT COVERED (Kapit is not on the Sarawak list). One handoff line: \"{NOTCOV}\" with Kapit. "
      "No partner brand, no permission question, no further sales question.",
-     "escalate_to_live_agent(label='coverage-unsupported-alternative') -> escalated true, chatwoot "
-     f"'skipped'; called BEFORE the reply text. {NO_RAG}",
-     "Exact label; State escalated=true and escalation_label=coverage-unsupported-alternative; no "
-     "'rakan kongsi'; stage still location.",
+     adv("postcode='96800', town='Kapit', state='Sarawak'", "not_covered") + "; then " + ESC_COV
+     + f" -> escalated true, chatwoot 'skipped'; called BEFORE the reply text. {NO_RAG}",
+     "Exact label; State escalated=true, escalation_label=coverage-unsupported-alternative and "
+     "customer_location set; no 'rakan kongsi'; stage still location.",
      "Pass"),
     ("B3", RB, f"New session. {W1}", "Saya di Kuching, poskod 93350",
      "COVERED (Kuching is on the Sarawak list): the covered line with Kuching + the kerja question.",
-     f"advance_purchase_stage() -> location to qualification. {NO_RAG}",
+     adv("postcode='93350', town='Kuching', state='Sarawak'", "ok") + f", location to qualification. {NO_RAG}",
      "Covered verdict; stage = qualification; no RAG call.",
      "Pass"),
     ("B4", RB, f"New session. {W1}", "Kota Kinabalu, Sabah. Poskod 88000",
      "COVERED (Kota Kinabalu is on the Sabah list): covered line + kerja question.",
-     f"advance_purchase_stage() -> qualification. {NO_RAG}",
+     adv("postcode='88000', town='Kota Kinabalu', state='Sabah'", "ok") + f" -> qualification. {NO_RAG}",
      "Covered verdict for a listed Sabah town; stage = qualification.",
      "Pass"),
     ("B5", RB, f"New session. {W1}", "Saya duduk Nabawan, Sabah",
      "NOT COVERED (Nabawan is inland Sabah, not on the list): the not-covered handoff line with Nabawan.",
-     f"escalate_to_live_agent(label='coverage-unsupported-alternative'). {NO_RAG}",
+     adv("town='Nabawan', state='Sabah'", "not_covered") + f"; then {ESC_COV}. {NO_RAG}",
      "Inland Sabah rejected, not guessed as covered; exact label; escalated=true.",
      "Pass"),
     ("B6", RB, f"New session. {W1}", "Poskod 87000, Labuan",
      "NOT COVERED (W.P. Labuan 87xxx): the not-covered handoff line.",
-     f"escalate_to_live_agent(label='coverage-unsupported-alternative'). {NO_RAG}",
+     adv("postcode='87000', town or state='Labuan'", "not_covered") + f"; then {ESC_COV}. {NO_RAG}",
      "Labuan not treated as Sabah; exact label.",
      "Pass"),
     ("B7", RB, f"New session. {W1}", "Saya tinggal di Singapore, boleh hantar tak?",
      "NOT COVERED (outside Malaysia): the not-covered handoff line. No delivery promise and no claim that a "
      "partner brand covers Singapore.",
-     f"escalate_to_live_agent(label='coverage-unsupported-alternative'). {NO_RAG}",
+     adv("state or town='Singapore'", "not_covered") + f"; then {ESC_COV}. {NO_RAG}",
      "No overseas delivery or partner coverage claimed; exact label.",
      "Fail"),
     ("B8", RB, f"New session. {W1}", "Poskod 10450, Georgetown Pulau Pinang",
      "COVERED (Semenanjung): covered line + kerja question.",
-     f"advance_purchase_stage() -> qualification. {NO_RAG}",
+     adv("postcode='10450', town='Georgetown', state='Pulau Pinang'", "ok") + f" -> qualification. {NO_RAG}",
      "Covered verdict; stage = qualification (on 2026-09-20 the stage stayed behind).",
      "Fail"),
     ("B9", RB, f"New session. {W1}", "Saya duduk Sabah",
      "Area unclear (state only): asks for the town or area name before deciding. No verdict.",
-     "none",
+     adv("state='Sabah'", "need_town") + " (asks the question in 'ask'), or no tool call",
      "No coverage verdict; not escalated; stage still location.",
      "New test"),
     ("B10", RB, f"New session. {W1}", "Poskod 96800",
      "Sarawak postcode without a town: asks for the town or area name before deciding. No verdict yet.",
-     "none",
+     adv("postcode='96800'", "need_town") + " (no town worked out from the postcode)",
      "No coverage verdict; not escalated; stage still location.",
      "New test"),
     ("B11", RB, "New session (no warm-up)", "Saya nak aircond, saya duduk Kajang Selangor",
      f"Product and area in one message: {usp_expect('aircond_kool_series', 'the KOOL Series aircond')}, then "
      "the covered line (Kajang) + kerja question. No location question, because the area was given.",
-     "set_product_interest('aircond_kool_series') -> ok, first_time true; then advance_purchase_stage() -> "
-     f"qualification. {NO_RAG}",
+     "set_product_interest('aircond_kool_series') -> ok, first_time true; then "
+     + adv("town='Kajang', state='Selangor'", "ok") + f" -> qualification. {NO_RAG}",
      "USP verbatim once; covered verdict; stage = qualification; not escalated.",
      "New test"),
     ("B12", RB, "New session (no warm-up)", "Nak peti ais 592, saya duduk Kapit Sarawak",
-     "Product and an uncovered area in one message: one not-covered handoff line (Kapit). The 592L USP may "
-     "appear above it or be absent; both are acceptable here.",
-     "set_product_interest('chillmaster_592l'), then escalate_to_live_agent(label='coverage-unsupported-"
-     f"alternative'). {NO_RAG}",
-     "Exact label; escalated=true; one handoff line; no sales question after it.",
+     "Product and an uncovered area in one message: one not-covered handoff line (Kapit), and no USP (code "
+     "drops the USP on a handoff turn).",
+     "set_product_interest('chillmaster_592l'), then " + adv("town='Kapit', state='Sarawak'", "not_covered")
+     + f", then {ESC_COV}. {NO_RAG}",
+     "Exact label; escalated=true; one handoff line; no USP; no sales question after it.",
      "New test"),
     # --- C Product selection ------------------------------------------------------------
     ("C1", RC, "New session", "8",
@@ -326,10 +346,11 @@ ROWS = [
      "Numbers match the DryMaster chunk in Events.",
      "Pass"),
     ("D4", RD, "After D3", "Ada produk apa lagi?",
-     "Shows the full 8-product list in 3 groups inside the reply (not 'see the list above'). No USP dump. "
-     "May end with the location question or a which-product question.",
+     "Copies the 8-product list in 3 groups exactly as in Reference > Product list, inside the reply (not "
+     "'see the list above'). No USP dump. Ends with the location question, because that step is still "
+     "pending.",
      "none (or query_product_info)",
-     "All 8 products listed in the reply; stage unchanged.",
+     "List identical to the Reference; ends with the location question; stage unchanged.",
      "Fail"),
     ("D5", RD, "After D4 - same question as D1", "Waranti berapa tahun untuk produk ni?",
      "Same warranty facts as D1, then the location question again.",
@@ -337,10 +358,12 @@ ROWS = [
      "Consistent with D1; no new or different numbers.",
      "Changed test"),
     ("D6", RD, "After D5", "KHIND ada jual TV atau microwave tak?",
-     "Explains that this scheme covers the 8 listed appliances; no TV or microwave specs or prices invented. "
-     "If it refers to the list, it shows it.",
+     "Explains that this rental scheme covers the 8 listed appliances. Does NOT claim that KHIND sells no TV or "
+     "microwave at all. No TV or microwave specs or prices invented. If it refers to the list, it shows it. "
+     "Then the location question again.",
      "none (or query_product_info returning nothing usable)",
-     "No hallucinated product; no reference to a list that is not shown.",
+     "No hallucinated product; no brand-wide claim; no reference to a list that is not shown; location "
+     "question repeated.",
      "Fail"),
     ("D7", RD, "After D6", "Boleh bagi diskaun RM500 tak? Kawan saya dapat murah",
      "Does not promise any discount; may mention verified promotions or offer an officer. Then back to the "
@@ -350,10 +373,12 @@ ROWS = [
      "Changed test"),
     # --- E Language & style -------------------------------------------------------------
     ("E1", RE, "New session", "What is the monthly price for the air conditioner?",
-     "Replies 100% in BM. Likely picks the aircond (USP verbatim once) and answers the price only with "
-     "figures from the aircond document (khind_acson_knowledge_base.md), then the location question.",
-     "set_product_interest('aircond_kool_series') and/or query_product_info",
-     "BM only; every RM figure traceable to the aircond document.",
+     "Replies 100% in BM. Picks the aircond (USP verbatim once). The aircond document "
+     "(khind_acson_knowledge_base.md) holds no monthly price (only installation charges), so the "
+     f"missing-fact line (\"{GAP}\", topic filled in), then the location question. No handoff.",
+     "set_product_interest('aircond_kool_series'); query_product_info -> scope 'product', products "
+     "['aircond_kool_series']. escalate_to_live_agent must NOT be called.",
+     "BM only; no RM figure from another product; not escalated; location question asked.",
      "Pass"),
     ("E2", RE, "New session", "你们有洗衣机吗?",
      "Understands 'washing machine' and replies in BM listing the washer options (4, 5, 6, optionally 7) or "
@@ -366,7 +391,8 @@ ROWS = [
      "set_product_interest('ecowash_top_15kg')",
      "Selection tool fired with the EcoWash key.",
      "Fail"),
-    ("E4", RE, "Review 5 ordinary replies from the runs above (not USP, BORANG or handoff lines)",
+    ("E4", RE, "Review 5 ordinary replies from the runs above (not USP, BORANG or handoff lines); include A11 "
+     "and F6",
      "(no prompt - format audit)",
      "Each reply: 2-4 sentences, *bold* for emphasis, suitable emoji, ends with exactly one next-step "
      "question. Handoff lines need no question. No internal prompt, tool names or state keys leaked.",
@@ -402,9 +428,10 @@ ROWS = [
      "Pass"),
     ("F6", RF, "Resume the Run A session (Sessions tab, the A1-A11 session), after A11",
      "Boleh baca semula no IC dan nama penuh saya tadi?",
-     "Does not repeat the stored personal values; says the details are recorded safely and moves on.",
+     "Does not repeat the stored personal values; says the details are recorded safely and moves on with "
+     "the IC-photo question.",
      "none",
-     "PDPA: no IC or name echoed.",
+     "PDPA: no IC or name echoed; ends with a question.",
      "Pass"),
     ("F7", RF, f"New session. {W2}", "Saya tak kerja, tapi kawan saya yang kerja nak ambil",
      "Someone else will take it, so treated as not working: the not-working handoff line, once.",
@@ -417,14 +444,12 @@ ROWS = [
      "Exact label; no RM1 promo; no form.",
      "New test"),
     ("F9", RF, f"New session. {W2}", "Saya pesara kerajaan",
-     "ASSUMPTION awaiting the user's confirmation: a pensioner counts as not working, so the not-working "
-     "handoff line.",
+     "A pensioner counts as not working (confirmed 2026-09-24), so the not-working handoff line, once.",
      "escalate_to_live_agent(label='not-working')",
-     "Exact label. If the user decides pensioners count as working, flip this expectation.",
+     "Exact label; no RM1 promo; no form.",
      "New test"),
     ("F10", RF, f"New session. {W2}", "Saya berniaga sendiri, jual kuih",
-     f"ASSUMPTION awaiting the user's confirmation: self-employed counts as working, so the RM1 line: "
-     f"\"{RM1}\". No escalation.",
+     f"Self-employed counts as working (confirmed 2026-09-24), so the RM1 line: \"{RM1}\". No escalation.",
      "none",
      "Not escalated; RM1 promo offered.",
      "New test"),
@@ -466,10 +491,13 @@ ROWS = [
      "keys, rag_cache_generation incremented. ✅ lines in the reply = 6.",
      "Fail"),
     ("G6", RG, "After G5", "Ok balik pada peti ais 592L tadi, berapa berat dia?",
-     "Switches back without repeating the 592L USP. A weight only if a 592L-document chunk states it; if "
-     "not, it must not quote ChillMaster Lite figures (80kg / 87kg). Then the kerja question again.",
-     "set_product_interest('chillmaster_592l') -> first_time false; query_product_info (592L)",
-     "No USP repeat; no figure from another product's document; stage still qualification.",
+     "Switches back without repeating the 592L USP. The 592L document states Net Weight 85kg (Gross 95kg): "
+     "quote that. The missing-fact line here is a Minor Fail, because the answer is in the document. Never "
+     "ChillMaster Lite figures (80kg / 87kg). No handoff. Then the kerja question again.",
+     "set_product_interest('chillmaster_592l') -> first_time false; query_product_info -> scope 'product', "
+     "products ['chillmaster_592l']. escalate_to_live_agent must NOT be called.",
+     "State product_interest=chillmaster_592l; no USP repeat; no figure from another product's document; "
+     "stage still qualification; not escalated.",
      "N/A"),
     ("G7", RG, "New session. Warm-up: send '8'. Stage = location", "Eh tukar la, saya nak washer dryer",
      f"Switches to the 2-in-1 Washer Dryer: {usp_expect('washer_dryer_11_7', 'the washer dryer')}, then the "
@@ -624,8 +652,11 @@ line("", "No USP text in the tool response", "By design set_product_interest ret
 line("", "Two handoff lines in ADK Web", "ADK Web shows every event. If the model writes a handoff line with the "
      "tool call and another after it, production keeps only the first (build_reply). Note it in J; not a Fail.")
 line("", "Lead-in before BORANG", "One short sentence before the form is allowed.")
-line("", "Stage machine errors", "advance_purchase_stage returns status 'error' when no product is set or at "
-     "the end of the stage machine. Designed behaviour.")
+line("", "Coverage statuses", "advance_purchase_stage returns status 'error' when no product is set, and "
+     "'need_town' / 'need_state' / 'need_location' when the place is not clear yet (the agent then asks the "
+     "question in 'ask'). After the location step, a call with no place is a no-op. Designed behaviour.")
+line("", "customer_location in State", "Written by advance_purchase_stage for the Chatwoot handoff note. "
+     "Expected after any covered or not-covered verdict.")
 line("", "Empty State at start", "A new ADK Web session has no keys; a missing purchase_stage means discovery.")
 
 section("Product number -> canonical key -> RAG source document (for product-identity checks on figures)")
@@ -635,7 +666,8 @@ for num, key, name, src in PRODUCTS:
 section("Sales stage machine (purchase_stage) - updated 2026-09-24")
 line("", "discovery -> location", "set_product_interest() on a product pick (the old 'product' stage is legacy "
      "and treated as location)")
-line("", "location -> qualification", "advance_purchase_stage() after a COVERED area")
+line("", "location -> qualification", "advance_purchase_stage(postcode, town, state) when code finds the area "
+     "COVERED")
 line("", "qualification -> form", "optional; the closing fragment covers both stages")
 line("", "product switch", "set_product_interest() at a later stage keeps the stage; the USP and media go out "
      "once for the new product")
@@ -645,9 +677,11 @@ line("", "coverage-unsupported-alternative", "Area outside the covered lists")
 line("", "not-working", "Customer does not work (new on 2026-09-24; replaces no-payslip-alternative)")
 line("", "human-required", "Customer asks for a human")
 line("", "angry-customer", "Complaint or anger")
-line("", "rag-error", "RAG retrieval failed")
+line("", "rag-error", "RAG retrieval failed (query_product_info status 'error') - ONLY then. A fact that the "
+     "documents do not hold is NOT a handoff: the agent sends the missing-fact line and carries on.")
 
-section("Coverage rules (prompt-based, NO RAG call)")
+section("Coverage rules (decided in code by advance_purchase_stage, NO RAG call; the model only passes "
+        "postcode / town / state)")
 line("", "Semenanjung 01000-86999", "ALL areas COVERED")
 line("", "Sarawak 93xxx-98xxx", "COVERED only: Sarikei, Asajaya, Miri, Kuching, Kota Samarahan, Balingian "
      "Mukah, Sibu, Siburan, Sri Aman, Bau, Serian, Bintulu")
@@ -657,8 +691,8 @@ line("", "Sabah 88xxx-91xxx", "COVERED only: Kudat, Papar, Menumbok, Ranau, Tuar
      "Kota Marudu, Sipitang")
 line("", "W.P. Labuan 87xxx", "NOT covered")
 line("", "Outside Malaysia", "NOT covered")
-line("", "Unclear area", "Only a state name, or a Sabah/Sarawak postcode without a town: the agent must ask for "
-     "the town before deciding")
+line("", "Unclear area", "Only 'Sabah' or 'Sarawak', or a Sabah/Sarawak postcode without a town: the agent must "
+     "ask for the town before deciding (status need_town). A Peninsular state alone is enough: COVERED.")
 
 section("Fixed customer texts (copied from apps/prompts/khind_prompts.py)")
 line("", "Location question", LOCQ)
@@ -666,6 +700,10 @@ line("", "Covered line + kerja question", COVERED)
 line("", "Not-covered handoff line", NOTCOV)
 line("", "RM1 line (working)", RM1)
 line("", "Not-working handoff line", NOTWORK)
+line("", "Missing-fact line (not a handoff)", f"{GAP}   ([topik] is filled in; the pending question follows)")
+line("", "Form-complete line", DONE)
+line("", "Town question (need_town)", P.TOWN_QUESTION.format(region="Sabah/Sarawak"))
+line("", "Product list (copy exactly)", P.PRODUCT_MENU)
 for label, text in P.HANDOFF_FALLBACK_LINES.items():
     line("", f"Fallback line: {label}", f"{text}   (sent by code only when the model writes nothing)")
 line("", "Fallback line: other labels", P.DEFAULT_HANDOFF_LINE)
@@ -678,16 +716,16 @@ section("BORANG template - must appear exactly (only the Produk value changes)")
 line("", "BORANG PERMOHONAN KHIND", BORANG)
 
 section("Known open issues to watch (2026-09-24)")
-line("", "Cross-product figures (A3, G6)", "RAG ranks the ChillMaster Lite 480L document above the 592L one "
-     "for 592L price and weight questions, and the 592L chunk has no price or weight. Quoting RM75/RM95 or "
-     "80kg/87kg for the 592L is a Critical Fail.")
+line("", "Cross-product figures (A3, G6)", "Failed on the first 2026-09-24 run: whole-corpus search returned "
+     "the ChillMaster Lite 480L document. Searches are now limited to the product's own document (Function "
+     "Response: scope 'product'). Quoting RM75/RM95 or 80kg/87kg for the 592L is still a Critical Fail.")
+line("", "DryMaster prices (D2, C8)", "The DryMaster document holds two conflicting price tables (RM85/month "
+     "x 48, or RM105 x 48 and RM135 x 36). Either traces to the DryMaster document: not a Fail, but note it.")
 line("", "PDPA name echo (A8)", "The model thanked customers by name on 2026-09-20 and 2026-09-24.")
 line("", "Duplicate blank form (A11)", "The full blank form was resent after completion on 2026-09-20.")
 line("", "Duplicate USP on a switch (G5, G7)", "The model sometimes writes its own product description; code "
      "strips it. Count the ✅ lines against this sheet.")
-line("", "Product + area in one message (B11, B12)", "Not tested with the real model before this run.")
-line("", "Assumptions (F9, F10)", "Pensioner = not working, self-employed = working. Awaiting the user's "
-     "confirmation; flag the outcome, do not treat a mismatch as a defect until confirmed.")
+line("", "Employment rules (F9, F10)", "Confirmed 2026-09-24: pensioner = not working, self-employed = working.")
 
 # ---------------------------------------------------------------------------
 # Sheet 3: Summary (formulas only; Excel recalculates on open)
