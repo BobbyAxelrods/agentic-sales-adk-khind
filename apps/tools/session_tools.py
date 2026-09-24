@@ -12,6 +12,7 @@ from apps.prompts.khind_prompts import (
 )
 from apps.services.coverage import REGION_NAMES, check_coverage
 from apps.services.replies import REPLY_FACTS_KEY
+from apps.tools.escalation_tool import COVERAGE_HANDOFF_LABEL, hand_off
 
 
 PURCHASE_STAGES = ("discovery", "product", "location", "qualification", "form")
@@ -238,7 +239,7 @@ _ASK = {
 }
 
 
-def advance_purchase_stage(
+async def advance_purchase_stage(
     tool_context: ToolContext,
     postcode: str = "",
     town: str = "",
@@ -253,8 +254,8 @@ def advance_purchase_stage(
 
     Act on the returned status:
     - "ok": covered. The next instructions give the reply.
-    - "not_covered": call escalate_to_live_agent(label="coverage-unsupported-alternative")
-      first, then send the not-covered line with `area`.
+    - "not_covered": this tool has already handed the chat to an officer. Do not call
+      escalate_to_live_agent; send only the not-covered line with `area`.
     - "need_town" / "need_location": no verdict yet; ask only the question in `ask`.
     - "need_state": call again with the state if you know it from the town; otherwise ask
       only the question in `ask`.
@@ -296,12 +297,17 @@ def advance_purchase_stage(
     tool_context.state["location_draft"] = {}
     tool_context.state["customer_location"] = verdict.location
     if verdict.status == "not_covered":
+        # The handoff is made here, not left to the model: in the 2026-09-24 rerun it once
+        # skipped the escalate call (B12) and once wrote its reasoning beside it (B6).
+        handoff = await hand_off(COVERAGE_HANDOFF_LABEL, tool_context)
         return {
             "status": "not_covered",
             "area": verdict.area,
+            "escalated": handoff["escalated"],
+            "label": handoff["label"],
             "message": (
-                "Area not covered. Call escalate_to_live_agent(label="
-                "'coverage-unsupported-alternative') first, then send the not-covered line with `area`."
+                "Area not covered. The chat is already handed to an officer: do not call "
+                "escalate_to_live_agent. Reply only with the not-covered line with `area`."
             ),
         }
     if at_location_step:

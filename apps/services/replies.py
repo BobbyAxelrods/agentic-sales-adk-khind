@@ -1,14 +1,16 @@
 """Shape the text the customer receives from one agent turn.
 
-- drop_text_beside_coverage_call: after_model_callback that removes text written in the
-  same response as an advance_purchase_stage call, before the coverage verdict exists.
+- drop_text_beside_coverage_or_handoff_call: after_model_callback that removes text written
+  in the same response as an advance_purchase_stage or escalate_to_live_agent call.
 - insert_pending_usp: after_model_callback that puts the approved product USP, word
   for word, at the top of the model's reply after a first product pick. The USP
   becomes part of the model's own message, so adk web, the API server and the
   webhook all show exactly what the customer gets.
+- fill_empty_handoff_reply: after_model_callback that gives a handoff turn's empty final
+  reply the label's fixed line.
 - build_reply: turns one turn's ADK events into the reply text for the customer.
 
-Both are pure functions over ADK objects, so they can be tested without Vertex AI
+All are pure functions over ADK objects, so they can be tested without Vertex AI
 or Chatwoot.
 """
 
@@ -33,8 +35,14 @@ PENDING_USP_KEY = "pending_usp_products"
 # Set to the turn's invocation id by the tools whose results the reply must carry
 # (query_product_info, advance_purchase_stage).
 REPLY_FACTS_KEY = "reply_facts_invocation"
+# Set to the turn's invocation id when the chat is handed to an officer (see
+# apps.tools.escalation_tool.hand_off).
+HANDOFF_TURN_KEY = "escalation_invocation"
 _ESCALATION_TOOL = "escalate_to_live_agent"
 _COVERAGE_TOOL = "advance_purchase_stage"
+# Text the model writes beside these calls is never sent (see
+# drop_text_beside_coverage_or_handoff_call).
+_TEXT_FREE_TOOLS = frozenset({_COVERAGE_TOOL, _ESCALATION_TOOL})
 
 
 def _visible_text(parts: Optional[list[genai_types.Part]]) -> str:
@@ -76,19 +84,22 @@ def _closing_question(text: str) -> str:
     return (asking or paragraphs or [""])[-1]
 
 
-def drop_text_beside_coverage_call(
+def drop_text_beside_coverage_or_handoff_call(
     callback_context: CallbackContext, llm_response: LlmResponse
 ) -> Optional[LlmResponse]:
-    """Remove text the model writes in the same response as an advance_purchase_stage call.
+    """Remove text the model writes in the same response as a coverage or handoff call.
 
-    The coverage verdict comes from that tool. A line such as "kawasan ... ada dalam
-    liputan" written before the result could contradict it, and build_reply keeps text
-    written beside tool calls. The reply is written after the tool returns.
+    - advance_purchase_stage: the coverage verdict comes from the tool. A line such as
+      "kawasan ... ada dalam liputan" written before the result could contradict it.
+    - escalate_to_live_agent: in the 2026-09-24 rerun (B6) the model wrote its English
+      reasoning here, and it went out as the handoff line.
+    build_reply keeps text written beside other tool calls. The reply is written after the
+    tool returns; a handoff turn that ends with no text gets its label's fixed line.
     """
     if llm_response.partial or not llm_response.content:
         return None
     parts = list(llm_response.content.parts or [])
-    if not any(p.function_call and p.function_call.name == _COVERAGE_TOOL for p in parts):
+    if not any(p.function_call and p.function_call.name in _TEXT_FREE_TOOLS for p in parts):
         return None
     kept = [p for p in parts if not (p.text and not p.thought)]
     if len(kept) == len(parts):
@@ -149,33 +160,55 @@ def insert_pending_usp(
     return llm_response
 
 
+def fill_empty_handoff_reply(
+    callback_context: CallbackContext, llm_response: LlmResponse
+) -> Optional[LlmResponse]:
+    """Give the final reply of a handoff turn the label's fixed line if the model wrote none.
+
+    Text written beside the escalate call is dropped, so without this the customer could
+    get no handoff line. build_reply has the same fallback; this one also covers adk web.
+    """
+    state = callback_context.state
+    if llm_response.partial or llm_response.error_code:
+        return None
+    if state.get(HANDOFF_TURN_KEY) != callback_context.invocation_id:
+        return None
+    parts = list(llm_response.content.parts or []) if llm_response.content else []
+    if any(p.function_call for p in parts) or _visible_text(parts):
+        return None
+    label = str(state.get("escalation_label") or "")
+    parts.append(genai_types.Part(text=HANDOFF_FALLBACK_LINES.get(label, DEFAULT_HANDOFF_LINE)))
+    llm_response.content = genai_types.Content(role="model", parts=parts)
+    return llm_response
+
+
 def build_reply(events: Iterable[Event]) -> str:
     """Return the customer reply for one turn's events ("" if there is nothing to send).
 
     - Text is taken from every non-partial agent event, including text the model
       writes in the same step as a tool call. is_final_response() alone drops that.
+      Text beside a coverage or handoff call is the exception: it is never sent (the
+      after-model callback removes it too).
     - Exact repeats are skipped. Chunks are joined with a blank line.
-    - If the handoff line came with the escalate_to_live_agent call, any later text
-      in the turn is ignored, so the customer gets one handoff line, not two.
-    - A handoff turn with no text at all gets the fixed fallback line for its label.
+    - A handoff turn with no text at all gets the fixed fallback line for its label. The
+      handoff is read from the tool results, so a handoff made by advance_purchase_stage
+      counts too.
     """
     chunks: list[str] = []
     handoff_label: Optional[str] = None
-    handoff_line_sent = False
 
     for event in events:
         if event.partial or event.author == "user" or not event.content:
             continue
+        for response in event.get_function_responses():
+            result = response.response or {}
+            if result.get("escalated"):
+                handoff_label = str(result.get("label", "")).strip().lower()
+        if any(call.name in _TEXT_FREE_TOOLS for call in event.get_function_calls()):
+            continue
         text = _visible_text(event.content.parts)
-        escalations = [
-            call for call in event.get_function_calls() if call.name == _ESCALATION_TOOL
-        ]
-        if text and not handoff_line_sent and text not in chunks:
+        if text and text not in chunks:
             chunks.append(text)
-        if escalations:
-            handoff_label = str((escalations[-1].args or {}).get("label", "")).strip().lower()
-            if text:
-                handoff_line_sent = True
 
     reply = "\n\n".join(chunks)
     if not reply and handoff_label is not None:

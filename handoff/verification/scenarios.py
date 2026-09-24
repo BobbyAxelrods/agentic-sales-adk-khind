@@ -5,6 +5,7 @@ Start the server first, from the repo root (port 8001 leaves ADK Web on 8000 alo
 Then: KHIND_API_BASE=http://127.0.0.1:8001 .venv/bin/python handoff/verification/scenarios.py [names...]
 Names: happy notcovered notworking friend linear switch legacy
        price592 postcode_only product_area mention menu_pending kb_gap switch_back completion
+       labuan product_uncovered
 """
 import os, re, sys, time
 import httpx
@@ -12,7 +13,7 @@ sys.path.insert(0, ".")
 from google.adk.events import Event
 from apps.services.replies import build_reply
 from apps.prompts.khind_prompts import (
-    APPLICATION_COMPLETE_LINE, KHIND_PRODUCT_USPS, NOT_WORKING_HANDOFF_LINE, PRODUCT_MENU,
+    APPLICATION_COMPLETE_LINE, IC_PHOTO_QUESTION, KHIND_PRODUCT_USPS, NOT_WORKING_HANDOFF_LINE, PRODUCT_MENU,
 )
 
 BASE = os.environ.get("KHIND_API_BASE", "http://127.0.0.1:8000")
@@ -61,6 +62,10 @@ GAP = "Pegawai kami akan sahkan"  # from KB_GAP_LINE
 ticks = lambda s: sum(1 for line in s.split(chr(10)) if line.strip().startswith("✅"))
 # True if the reply ends with a question, ignoring trailing emoji.
 ends_with_question = lambda s: re.sub(r"[\s\U0001F000-\U0001FAFF☀-➿️]+$", "", s).endswith("?")
+has_emoji = lambda s: bool(re.search(r"[\U0001F000-\U0001FAFF☀-➿]", s))
+NOT_COVERED = "Maaf sangat cik/tuan, kawasan {area} belum ada liputan KHIND buat masa ini. 🙏 Pegawai kami akan hubungi cik/tuan nanti ya."
+# English reasoning or internal names that must never reach the customer (B6).
+LEAKS = ("tool", "escalate", "not_covered", "According to", "I need to", "The ")
 
 def happy():
     print("\n===== Happy path =====")
@@ -80,6 +85,9 @@ def happy():
     r, t, st = say(s, "Nama saya Ali bin Abu, IC 000000-00-0000, email ali@example.com")
     check("fields: saved, no full form resent", "save_application_details" in t and "BORANG PERMOHONAN KHIND" not in r)
     check("fields: asks for a missing field", any(k in r for k in ("Whatsapp", "Alamat", "Pekerjaan", "Syarikat", "kecemasan", "Kecemasan")))
+    check("E4: the missing-field reply has an emoji", has_emoji(r))
+    check("PDPA: no personal value echoed (open issue: name echo in the form step)",
+          not any(v in r for v in ("Ali", "000000-00-0000", "ali@example.com")))
 
 def not_covered():
     print("\n===== Not covered =====")
@@ -89,6 +97,7 @@ def not_covered():
     r, t, st = say(s, "Kapit, Sarawak")
     check("Kapit: escalated with coverage label", st.get("escalated") and st.get("escalation_label") == "coverage-unsupported-alternative")
     check("Kapit: one 'nanti' handoff line, no partner brand", r.count("nanti") == 1 and "rakan kongsi" not in r)
+    check("Kapit: handed over by advance_purchase_stage, no escalate call from the model", "escalate_to_live_agent" not in t)
 
 def not_working(first, area, answer, name):
     print(f"\n===== Not working: {name} =====")
@@ -179,9 +188,9 @@ def menu_pending():
     r, t, st = say(s, "Waranti berapa tahun untuk produk ni?")
     check("D5: location question again, not 'which product'", LOCQ in r and "yang mana" not in r.lower())
     r, t, st = say(s, "KHIND ada jual TV atau microwave tak?")
-    unseen_list = any(p in r for p in ("senarai tadi", "senarai produk tadi", "sebelum ini", "di atas"))
-    check("D6: no brand-wide claim, no reference to an unseen list",
-          "tidak menjual" not in r and (not unseen_list or PRODUCT_MENU in r))
+    check("D6: no brand-wide claim, 'senarai' only with the list shown",
+          "tidak menjual" not in r and ("senarai" not in r.lower() or PRODUCT_MENU in r))
+    check("D6: names what the scheme covers", any(k in r.lower() for k in ("peti sejuk", "mesin basuh", "penyaman udara")))
     check("D6: location question again", LOCQ in r)
 
 def kb_gap():
@@ -218,6 +227,30 @@ def completion():
     check("A10: no personal value echoed", "Ali" not in r and "900101015511" not in r)
     r, t, st = say(s, "Boleh hantar borang sekali lagi?")
     check("A11: no second form, ends with a question", "BORANG PERMOHONAN KHIND" not in r and ends_with_question(r))
+    check("E4 (A11): has an emoji, IC-photo question", has_emoji(r) and "gambar IC" in r)
+    r, t, st = say(s, "Boleh baca semula no IC dan nama penuh saya tadi?")
+    check("F6: no personal value echoed", "Ali" not in r and "900101015511" not in r)
+    check("E4 (F6): has an emoji, ends with a question", has_emoji(r) and ends_with_question(r))
+
+def labuan():
+    print("\n===== B6: Labuan, not covered =====")
+    s = new_session()
+    say(s, "1")
+    r, t, st = say(s, "Poskod 87000, Labuan")
+    check("B6: escalated with the coverage label", st.get("escalated") and st.get("escalation_label") == "coverage-unsupported-alternative")
+    check("B6: no escalate call from the model", "escalate_to_live_agent" not in t)
+    check("B6: the reply is exactly the not-covered line for Labuan", r == NOT_COVERED.format(area="Labuan"))
+    check("B6: no English reasoning or internal names", not any(w in r for w in LEAKS))
+
+def product_uncovered():
+    print("\n===== B12: product and an uncovered area in one message =====")
+    s = new_session()
+    r, t, st = say(s, "Nak peti ais 592, saya duduk Kapit Sarawak")
+    check("B12: product set and handed over with the coverage label",
+          st.get("product_interest") == "chillmaster_592l" and st.get("escalated")
+          and st.get("escalation_label") == "coverage-unsupported-alternative")
+    check("B12: no USP on the handoff turn", USP["chillmaster_592l"] not in r and ticks(r) == 0)
+    check("B12: one not-covered line with Kapit, no sales question", "Kapit" in r and r.count("nanti") == 1 and "?" not in r)
 
 SCEN = {
     "happy": happy,
@@ -235,6 +268,8 @@ SCEN = {
     "kb_gap": kb_gap,
     "switch_back": switch_back,
     "completion": completion,
+    "labuan": labuan,
+    "product_uncovered": product_uncovered,
 }
 for key, fn in SCEN.items():
     if not only or key in only:

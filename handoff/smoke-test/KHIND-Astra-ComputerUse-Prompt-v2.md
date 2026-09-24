@@ -30,7 +30,7 @@ each, and return:
   (a) the completed results table (all original columns plus your filled columns G, I, J, K),
   (b) a summary block: totals, pass rate, and every failure with its cause and severity,
   (c) a screenshot for every Fail,
-  (d) a comparison with the previous run using column L.
+  (d) a comparison with the 2026-09-20 run using column L, and with rerun 2 of 2026-09-24.
 
 # SYSTEM UNDER TEST
 
@@ -39,8 +39,8 @@ It replies in Bahasa Melayu and follows a strictly linear sales flow (changed on
   1. greeting + numbered list of 8 products;
   2. customer picks a product -> the reply is the fixed USP block of that product (inserted by
      code, word for word) followed by the question for postcode and area;
-  3. coverage check against fixed lists -> not covered: hand off to a human; covered: confirm
-     coverage and ask whether the customer works;
+  3. coverage check against fixed lists -> not covered: the coverage tool itself hands off to a
+     human; covered: confirm coverage and ask whether the customer works;
   4. not working -> hand off to a human; working -> "Pendaftaran hanya RM1" promo and an
      invitation to check eligibility;
   5. customer agrees -> the fixed application form (BORANG), then only the missing fields.
@@ -169,11 +169,14 @@ Judge these strictly and literally, not semantically:
 6. **Personal data (PDPA).** In A8, A9, A10 and F6 the reply must not repeat the IC number, full
    name, phone number, email or address the customer supplied - including greetings such as
    "Terima kasih Ali". Any echo is a Fail (Critical), tagged "PDPA" in column J.
-7. **Escalation.** Where column F names a label, the Function Call arguments must contain that
-   exact string, and State must show escalated=true. The reply must contain a correct handoff line
-   and no further selling. A handoff reply does not need to end with a question. If ADK Web shows
-   two handoff lines in one turn (one written with the tool call, one after it), note "double
-   handoff line" in J but do not fail the row: production keeps only the first.
+7. **Escalation.** Where column F names a label, that exact string must appear with
+   escalated=true: in the escalate_to_live_agent Function Call arguments or, for an area that is not
+   covered, in the advance_purchase_stage Function Response (that tool hands over itself). State
+   must show escalated=true and the label in escalation_label. The reply must contain exactly one
+   correct handoff line and no further selling. A handoff reply does not need to end with a
+   question. Code removes any text written in the same event as an advance_purchase_stage or
+   escalate_to_live_agent Function Call, so no such text may appear in the chat: if it does, that is
+   a Fail (Major).
 8. **Coverage.** The verdict must match the Reference lists exactly, and query_product_info must
    NOT be called for a coverage decision - if it is, that is a Fail even when the verdict is
    right. When the area is unclear (only a state name, or a Sabah/Sarawak postcode without a
@@ -191,24 +194,31 @@ Do not report these as bugs:
 - The set_product_interest Function Response has no USP text. By design it returns
   usp_sent_automatically: true, and code puts the approved USP on top of the model's reply.
 - No WhatsApp button menu appears. The numbered 1-8 text list is correct here.
-- escalate_to_live_agent returns chatwoot: "skipped". There is no Chatwoot conversation ID in a
-  dev-UI session. As long as escalated: true appears in State, it passed.
+- escalate_to_live_agent (or advance_purchase_stage, for an area that is not covered) returns
+  chatwoot: "skipped" or no chatwoot key. There is no Chatwoot conversation ID in a dev-UI session.
+  As long as escalated: true appears in State, it passed.
+- After a not_covered result the model calls escalate_to_live_agent anyway, and it returns
+  already_escalated: true. No second handoff is made. Note it in J; it is not a Fail.
 - advance_purchase_stage returns status "error" when no product is set or at the end of the
   stage machine. That is designed behaviour.
 - The State tab of a brand-new session is empty.
 
 # KNOWN OPEN ISSUES - INSPECT CLOSELY
 
-- A3 and G6: the knowledge base ranks the ChillMaster Lite 480L document above the 592L one for
-  592L price and weight questions, and the 592L chunk may contain no price or weight at all.
-  Check the "source" of every chunk before accepting a number (rule 5).
-- A8: the model thanked customers by name in earlier runs. Read the reply word by word (rule 6).
-- A11: the full blank form was resent after completion on 2026-09-20.
+Rerun 2 of 2026-09-24 (commit de4f6c9) passed 58 of 62. Its 4 failures were fixed after it:
+- B6 (Major): the model's English reasoning, written beside the escalate call, reached the chat.
+  Read the whole turn for English text, tool names or instructions (rule 7).
+- B12 (Major): no handoff after not_covered, and the USP on top of the reply. The coverage handoff
+  is now made by advance_purchase_stage itself: check its Function Response and State. The same
+  applies to B2, B5 and B7.
+- D6 (Minor): "8 produk dalam senarai kami" with no list shown.
+- E4 (Minor): no bold in A4, no emoji in A11 and F6. Every reply now needs an emoji; bold is only
+  for key terms.
+Also watch:
+- A8: the model thanked customers by name in earlier runs, and in scripted form-step runs after
+  rerun 2. Read the reply word by word (rule 6).
+- A3 and G6: check the "source" of every chunk before accepting a number (rule 5).
 - G5 and G7: after a product switch, count the ✅ lines against the Reference sheet (rule 2).
-- B11 and B12: product and area in one message have never been tested with the real model.
-- F9 and F10 rest on assumptions the user has not confirmed yet (pensioner = not working,
-  self-employed = working). Record what happens; if the result contradicts the expectation, mark
-  it Fail with severity Minor and write "assumption" in J.
 
 # PACING AND RELIABILITY
 
@@ -233,6 +243,8 @@ When all 62 rows are done, return, in this order:
     Minor = style, tone, missing closing question, unconfirmed-assumption mismatch).
 3. **Comparison with 2026-09-20** using column L: rows fixed since v1 (v1 Fail, now Pass), rows
    that regressed (v1 Pass, now Fail), rows still failing, and results of the "New test" rows.
+   Then a **comparison with rerun 2 of 2026-09-24**, in which every row passed except B6, B12, D6
+   and E4: which of those 4 now pass, and every other row that now fails.
 4. **The completed results file**, same columns and same row order as the input, with G, I, J
    and K filled. Deliver it as a downloadable CSV or XLSX.
 5. **Screenshots** for every Fail, named by test ID.

@@ -46,8 +46,8 @@ uv run --no-project --with openpyxl python handoff/smoke-test/build_smoke_test_v
 | Product photos and video | Media is sent by `apps/webhook.py` through GCS and Chatwoot. `set_product_interest` still returns `media_delivery: "trigger"`. |
 | USP text in the tool response | By design the tool returns `usp_sent_automatically: true`. Code inserts the approved USP into the reply. |
 | WhatsApp button list | Sent by the webhook. ADK Web shows the numbered 1-8 text list instead. |
-| Chatwoot handoff | Without a Chatwoot conversation ID the tool returns `chatwoot: "skipped"` but still sets `escalated: true`. |
-| One handoff line | ADK Web shows every event, so a line written with the tool call can appear next to one written after it. Production keeps only the first. |
+| Chatwoot handoff | Without a Chatwoot conversation ID the handoff returns `chatwoot: "skipped"` but still sets `escalated: true`. For an area that is not covered, `advance_purchase_stage` makes the handoff itself. |
+| One handoff line | Code removes text written with a coverage or handoff call, so ADK Web and production both show one handoff line, written after the tool. |
 | Vertex session persistence and the webhook | ADK Web uses its own runner and session service. The webhook path is a separate, known issue (see `CLAUDE.md`). |
 
 ## Coverage of the smoke test
@@ -65,18 +65,23 @@ uv run --no-project --with openpyxl python handoff/smoke-test/build_smoke_test_v
 
 ## What to watch
 
-- **Figures from the wrong product (A3, G6).** For 592L price and weight questions the knowledge
-  base ranks the ChillMaster Lite 480L document first, and the 592L chunk has no price or weight.
-  Quoting RM75/RM95 or 80kg/87kg for the 592L is a Critical fail. The Reference sheet maps every
-  product to its source document.
+- **Rerun 2 failures (2026-09-24, fixed after it).**
+  - B6 and B12: the coverage handoff is now made by `advance_purchase_stage` itself. Check its
+    Function Response (`escalated: true` and the label) and State, and that the reply is only the
+    not-covered line, with no USP and no English text.
+  - D6: "senarai" only when the list is shown.
+  - E4: every reply needs an emoji; bold is only for key terms.
+- **Figures from the wrong product (A3, G6).** Searches are limited to the product's own document
+  (Function Response: scope `product`). Quoting RM75/RM95 or 80kg/87kg for the 592L is still a
+  Critical fail. The Reference sheet maps every product to its source document.
 - **PDPA (A8).** A name echo such as "Terima kasih Ali bin Abu" was seen on 2026-09-20 and again
-  on 2026-09-24.
+  on 2026-09-24, also in scripted form-step runs after rerun 2.
 - **Duplicate blank form (A11).** It happened on 2026-09-20.
 - **USP exactly once (A2, B1, C1-C7, G5, G7).** Count the ✅ lines against the Reference sheet. An
   extra block means the model wrote its own description and the code guard missed it.
 - **Never a payslip question, never RM0.** Both belong to the old flow.
-- **Assumptions (F9, F10).** Pensioner = not working and self-employed = working are still
-  unconfirmed by the product owner.
+- **Employment rules (F9, F10).** Confirmed on 2026-09-24: pensioner = not working,
+  self-employed = working.
 
 ## Quick copy-paste prompts (happy path, one session)
 
@@ -105,4 +110,4 @@ The identity data above is the same fictional test data as in the 2026-09-20 run
 
 Astra runs all 62 rows in ID order, keeps Run A in one session, reads tool calls from **Events**
 and state from **State**, and returns the filled results, a failure table with severity, a
-comparison with 2026-09-20, screenshots and an evidence bundle.
+comparison with 2026-09-20 and with rerun 2, screenshots and an evidence bundle.

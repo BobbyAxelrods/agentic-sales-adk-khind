@@ -17,17 +17,22 @@ from google.genai import types as T
 import apps.tools.escalation_tool as escalation_tool
 import apps.tools.rag_tool as rag_tool
 from apps.prompts.khind_assembler import get_khind_instruction, pending_step
+from google.adk.tools import FunctionTool
+
 from apps.prompts.khind_prompts import (
     APPLICATION_COMPLETE_LINE, CLOSING_FRAGMENT_RAW, COVERAGE_FRAGMENT_RAW,
-    DISCOVERY_FRAGMENT_RAW, HANDOFF_FALLBACK_LINES, IC_PHOTO_QUESTION, KB_GAP_LINE,
+    DEFAULT_HANDOFF_LINE, DISCOVERY_FRAGMENT_RAW, HANDOFF_FALLBACK_LINES, IC_PHOTO_QUESTION, KB_GAP_LINE, KERJA_QUESTION,
     KHIND_CORE_RAW, KHIND_ESCALATION_RAW, KHIND_PRODUCT_USPS, LOCATION_QUESTION, PRODUCT_MENU,
 )
 from apps.services.coverage import check_coverage
-from apps.services.replies import build_reply, drop_text_beside_coverage_call, insert_pending_usp
+from apps.services.replies import (
+    build_reply, drop_text_beside_coverage_or_handoff_call, fill_empty_handoff_reply, insert_pending_usp,
+)
 from apps.tools.escalation_tool import ESCALATION_LABELS
 from apps.tools.session_tools import advance_purchase_stage, find_product_keys, set_product_interest
 
 INV = "inv-1"  # invocation id of the fake turn
+_visible = lambda resp: "".join(p.text for p in resp.content.parts if p.text and not p.thought)
 ok = 0
 def check(cond, msg):
     global ok
@@ -36,6 +41,8 @@ def check(cond, msg):
     print("PASS", msg)
 
 ctx = lambda **s: SimpleNamespace(invocation_id=INV, state=dict(s))
+# advance_purchase_stage is async: it hands an uncovered area to an officer itself.
+adv = lambda c, **kw: asyncio.run(advance_purchase_stage(c, **kw))
 
 # --- set_product_interest ---
 c = ctx(purchase_stage="discovery", pitched_products=[])
@@ -107,31 +114,57 @@ for (pc, town, st), want in {
     check(check_coverage(pc, town, st).status == want, f"coverage({pc!r}, {town!r}, {st!r}) -> {want}")
 
 # --- advance_purchase_stage (coverage decided in code) ---
-check(advance_purchase_stage(ctx(purchase_stage="discovery"))["status"] == "error", "advance with no product errors")
+check(adv(ctx(purchase_stage="discovery"))["status"] == "error", "advance with no product errors")
 for start in ("product", "location", "discovery"):
     c = ctx(purchase_stage=start, product_interest="aircond_kool_series")
-    r = advance_purchase_stage(c, postcode="43000")
+    r = adv(c, postcode="43000")
     check(c.state["purchase_stage"] == "qualification" and r["previous_stage"] == "location", f"covered from {start} -> qualification (previous_stage=location)")
 c = ctx(purchase_stage="location", product_interest="chillmaster_592l")
-r = advance_purchase_stage(c, town="Kajang", state="Selangor")
-check(r["area"] == "Kajang, Selangor" and c.state["customer_location"] == "Kajang, Selangor", "covered: area returned, customer_location written")
+r = adv(c, town="Kajang", state="Selangor")
+check(r["area"] == "Kajang, Selangor" and c.state["customer_location"] == "Kajang, Selangor" and not c.state.get("escalated"),
+      "covered: area returned, customer_location written, not escalated")
 c = ctx(purchase_stage="location", product_interest="chillmaster_592l")
-r = advance_purchase_stage(c, postcode="96800")
+r = adv(c, postcode="96800")
 check(r["status"] == "need_town" and "Sarawak" in r["ask"] and c.state["purchase_stage"] == "location"
-      and "customer_location" not in c.state, "B10: postcode alone -> need_town, no verdict, stage kept")
-r = advance_purchase_stage(c, town="Kapit")
+      and "customer_location" not in c.state and not c.state.get("escalated"), "B10: postcode alone -> need_town, no verdict, stage kept, not escalated")
+r = adv(c, town="Kapit")
 check(r["status"] == "not_covered" and c.state["purchase_stage"] == "location"
       and c.state["customer_location"] == "96800 Kapit", "next turn 'Kapit' joins the saved 96800 -> not_covered")
 c = ctx(purchase_stage="location", product_interest="chillmaster_592l")
-r = advance_purchase_stage(c)
+r = adv(c)
 check(r["status"] == "need_location" and r["ask"] == LOCATION_QUESTION, "no place -> location question")
-r = advance_purchase_stage(c, town="Shah Alam")
+r = adv(c, town="Shah Alam")
 check(r["status"] == "need_state" and c.state["purchase_stage"] == "location", "town without state -> need_state")
 c = ctx(purchase_stage="qualification", product_interest="chillmaster_592l")
-r = advance_purchase_stage(c)
+r = adv(c)
 check(r["status"] == "ok" and c.state["purchase_stage"] == "qualification" and "ask" not in r, "later stage, no place -> no-op")
-r = advance_purchase_stage(c, town="Kapit", state="Sarawak")
+r = adv(c, town="Kapit", state="Sarawak")
 check(r["status"] == "not_covered" and c.state["purchase_stage"] == "qualification", "later stage, uncovered move -> not_covered, stage kept")
+
+# B6/B12: an uncovered area is handed to an officer by advance_purchase_stage itself. In the
+# 2026-09-24 rerun the model skipped the escalate call (B12) or wrote its reasoning beside it (B6).
+check(c.state.get("escalated") and c.state.get("escalation_label") == "coverage-unsupported-alternative"
+      and r["escalated"] and r["label"] == "coverage-unsupported-alternative",
+      "B12: not_covered -> the tool itself sets escalated with the coverage label")
+check("do not call escalate_to_live_agent" in r["message"].lower(), "not_covered result tells the model not to call escalate_to_live_agent")
+handoffs = []
+async def record_handoff(conversation_id, label, state):
+    handoffs.append((conversation_id, label, state.get("customer_location")))
+    return True
+escalation_tool.chatwoot = SimpleNamespace(escalate_conversation=record_handoff)
+b6 = SimpleNamespace(invocation_id=INV, state=State(
+    {"chatwoot_conversation_id": "42", "purchase_stage": "location", "product_interest": "chillmaster_592l"}, {}))
+r = adv(b6, postcode="87000", town="Labuan")
+check(r["status"] == "not_covered" and handoffs == [("42", "coverage-unsupported-alternative", "87000 Labuan")],
+      "B6: Labuan -> one Chatwoot handoff with the coverage label and customer_location")
+r = asyncio.run(escalation_tool.escalate_to_live_agent("coverage-unsupported-alternative", b6))
+check(r["escalated"] and r.get("already_escalated") and len(handoffs) == 1,
+      "a repeat escalate call in the same turn makes no second Chatwoot handoff")
+r = asyncio.run(escalation_tool.escalate_to_live_agent("human-required", SimpleNamespace(invocation_id="inv-2", state=b6.state)))
+check(len(handoffs) == 2 and handoffs[-1][1] == "human-required" and b6.state["escalation_label"] == "human-required",
+      "a later turn can hand over again")
+decl = FunctionTool(advance_purchase_stage)._get_declaration()
+check(sorted(decl.parameters.properties) == ["postcode", "state", "town"], "async advance_purchase_stage still declares postcode, town, state only")
 
 # --- assembler ---
 inst = lambda **s: get_khind_instruction(SimpleNamespace(invocation_id=INV, state=s))
@@ -147,10 +180,19 @@ check("not-working" in KHIND_ESCALATION_RAW and "no-payslip" not in KHIND_ESCALA
 check("not-working" in ESCALATION_LABELS and "no-payslip-alternative" not in ESCALATION_LABELS, "tool labels updated")
 check("Pendaftaran hanya RM1*, tiada bayaran lain sekarang. Jom semak kelayakan dulu?" in CLOSING_FRAGMENT_RAW, "approved RM1 sentence present")
 check(HANDOFF_FALLBACK_LINES["not-working"] in CLOSING_FRAGMENT_RAW, "not-working line interpolated")
-check(APPLICATION_COMPLETE_LINE in CLOSING_FRAGMENT_RAW and APPLICATION_COMPLETE_LINE.endswith("?"), "E4: completion line fixed, ends with a question")
+check(APPLICATION_COMPLETE_LINE in CLOSING_FRAGMENT_RAW and APPLICATION_COMPLETE_LINE.endswith(IC_PHOTO_QUESTION),
+      "E4: completion line fixed, ends with the IC-photo question")
+check(IC_PHOTO_QUESTION.endswith("? 📸") and KERJA_QUESTION.endswith("? 😊"), "E4: IC-photo and kerja questions carry an emoji")
+check("sekurang-kurangnya satu emoji" in KHIND_CORE_RAW, "E4: style rule asks for an emoji in every reply")
 check(KB_GAP_LINE in KHIND_CORE_RAW and "BUKAN serahan" in KHIND_CORE_RAW, "missing-fact line in core, marked as not a handoff")
 check('only when query_product_info returns status "error"' in KHIND_ESCALATION_RAW, "rag-error only for a failed retrieval")
 check("Kapit" not in COVERAGE_FRAGMENT_RAW and "advance_purchase_stage(postcode=" in COVERAGE_FRAGMENT_RAW, "coverage lists left the prompt; tool decides")
+check('escalate_to_live_agent(label="coverage-unsupported-alternative")' not in COVERAGE_FRAGMENT_RAW
+      and "Do NOT call `escalate_to_live_agent`" in COVERAGE_FRAGMENT_RAW, "B6/B12: coverage fragment says the system hands over; no escalate call")
+check("coverage-unsupported-alternative: only after" not in KHIND_ESCALATION_RAW and "advance_purchase_stage" in KHIND_ESCALATION_RAW,
+      "escalation triggers: the coverage handoff is the tool's job")
+check("8 produk dalam senarai kami" not in KHIND_CORE_RAW and "peti sejuk, mesin basuh & pengering, dan penyaman udara" in KHIND_CORE_RAW,
+      "D6: out-of-range rule names the 3 categories, no unseen list")
 
 # D4/D5: the grouped list and the pending step are in every stage's instruction.
 for s in ({}, {"product_interest": "drymaster_9kg", "purchase_stage": "location"},
@@ -205,19 +247,43 @@ check(insert_pending_usp(SimpleNamespace(invocation_id=INV, state={}), LlmRespon
 cb = SimpleNamespace(invocation_id=INV, state={"pending_usp_products": ["chillmaster_592l"], "escalated": True})
 check(insert_pending_usp(cb, LlmResponse(content=None)) is None and cb.state["pending_usp_products"] == [], "escalated turn: USP dropped, pending cleared")
 
-# --- text written beside a coverage call is dropped ---
+# --- text written beside a coverage or handoff call is dropped ---
 early = LlmResponse(content=T.Content(role="model", parts=[
     T.Part(text="Baik, kawasan 96800 ada dalam liputan!"),
     T.Part(text="plan", thought=True),
     T.Part(function_call=T.FunctionCall(name="advance_purchase_stage", args={"postcode": "96800"}))]))
-out = drop_text_beside_coverage_call(SimpleNamespace(invocation_id=INV, state={}), early)
+out = drop_text_beside_coverage_or_handoff_call(SimpleNamespace(invocation_id=INV, state={}), early)
 check(out is not None and [bool(p.function_call) for p in out.content.parts] == [False, True]
       and out.content.parts[0].thought, "text beside advance_purchase_stage dropped; thought and call kept")
 handoff = LlmResponse(content=T.Content(role="model", parts=[
     T.Part(text="Maaf sangat cik/tuan, kawasan Kapit belum ada liputan."),
     T.Part(function_call=T.FunctionCall(name="escalate_to_live_agent", args={"label": "coverage-unsupported-alternative"}))]))
-check(drop_text_beside_coverage_call(SimpleNamespace(invocation_id=INV, state={}), handoff) is None, "handoff line beside escalate call kept")
-check(drop_text_beside_coverage_call(SimpleNamespace(invocation_id=INV, state={}), LlmResponse(content=T.Content(role="model", parts=[T.Part(text=Q)]))) is None, "plain text untouched")
+out = drop_text_beside_coverage_or_handoff_call(SimpleNamespace(invocation_id=INV, state={}), handoff)
+check(out is not None and [bool(p.function_call) for p in out.content.parts] == [True], "handoff line beside escalate call dropped (written after the tool)")
+# B6 (rerun 2): the model's English reasoning, written beside the escalate call, reached the customer.
+b6_reasoning = LlmResponse(content=T.Content(role="model", parts=[
+    T.Part(function_call=T.FunctionCall(name="escalate_to_live_agent", args={"label": "coverage-unsupported-alternative"})),
+    T.Part(text='The tool output indicates that the area "Labuan" is "not_covered". According to the instructions, '
+                'I need to call `escalate_to_live_agent(label="coverage-unsupported-alternative")` first.')]))
+out = drop_text_beside_coverage_or_handoff_call(SimpleNamespace(invocation_id=INV, state={}), b6_reasoning)
+check(out is not None and not any(p.text for p in out.content.parts), "B6: English reasoning beside the escalate call dropped")
+check(drop_text_beside_coverage_or_handoff_call(SimpleNamespace(invocation_id=INV, state={}), LlmResponse(content=T.Content(role="model", parts=[T.Part(text=Q)]))) is None, "plain text untouched")
+qpi = LlmResponse(content=T.Content(role="model", parts=[
+    T.Part(text="Sekejap ya."), T.Part(function_call=T.FunctionCall(name="query_product_info", args={"query": "x"}))]))
+check(drop_text_beside_coverage_or_handoff_call(SimpleNamespace(invocation_id=INV, state={}), qpi) is None, "text beside other tool calls kept")
+
+# --- a handoff turn whose final reply is empty gets the label's fixed line (ADK Web and WhatsApp alike) ---
+done = {"escalated": True, "escalation_label": "not-working", "escalation_invocation": INV}
+out = fill_empty_handoff_reply(SimpleNamespace(invocation_id=INV, state=dict(done)), LlmResponse(content=None))
+check(out is not None and out.content.parts[0].text == HANDOFF_FALLBACK_LINES["not-working"], "empty reply in the handoff turn -> label's fixed line")
+thought_only = LlmResponse(content=T.Content(role="model", parts=[T.Part(text="plan", thought=True)]))
+out = fill_empty_handoff_reply(SimpleNamespace(invocation_id=INV, state=dict(done, escalation_label="angry-customer")), thought_only)
+check(out is not None and _visible(out) == DEFAULT_HANDOFF_LINE, "thought-only reply -> default handoff line for labels without their own")
+written = LlmResponse(content=T.Content(role="model", parts=[T.Part(text=HANDOFF_FALLBACK_LINES["not-working"])]))
+check(fill_empty_handoff_reply(SimpleNamespace(invocation_id=INV, state=dict(done)), written) is None, "handoff line written by the model kept")
+check(fill_empty_handoff_reply(SimpleNamespace(invocation_id="inv-2", state=dict(done)), LlmResponse(content=None)) is None,
+      "a handoff from an earlier turn does not fill a later empty reply")
+check(fill_empty_handoff_reply(SimpleNamespace(invocation_id=INV, state=dict(done)), handoff) is None, "tool-call response untouched")
 
 # --- query_product_info: search limited to the named or active product ---
 calls, listing = [], []
@@ -337,7 +403,7 @@ resp = LlmResponse(content=T.Content(role="model", parts=[T.Part(text=answer)]))
 insert_pending_usp(cb, resp)
 check(resp.content.parts[0].text == f"{U592}\n\n{LQ}", "an answer marker from an older turn does not count")
 c = ctx(purchase_stage="location", product_interest="chillmaster_592l")
-advance_purchase_stage(c, postcode="43000")
+adv(c, postcode="43000")
 check(c.state.get("reply_facts_invocation") == INV, "advance_purchase_stage marks the turn")
 
 # --- build_reply ---
@@ -345,13 +411,21 @@ A = "khind_sales_agent"
 def ev(parts, author=A, partial=None):
     return Event(author=author, invocation_id="i", content=T.Content(role="user" if author == "user" else "model", parts=parts), partial=partial)
 call = lambda label: T.Part(function_call=T.FunctionCall(name="escalate_to_live_agent", args={"label": label}))
-resp_part = T.Part(function_response=T.FunctionResponse(name="escalate_to_live_agent", response={"status": "ok"}))
+resp = lambda label: T.Part(function_response=T.FunctionResponse(name="escalate_to_live_agent", response={"status": "ok", "escalated": True, "label": label}))
 NANTI = "Maaf sangat cik/tuan, kawasan Kapit belum ada liputan KHIND buat masa ini. 🙏 Pegawai kami akan hubungi cik/tuan nanti ya."
 
-check(build_reply([ev([call("coverage-unsupported-alternative")]), ev([resp_part]), ev([T.Part(text=NANTI)])]) == NANTI, "call-only escalate, line after tool kept")
-check(build_reply([ev([T.Part(text=NANTI), call("coverage-unsupported-alternative")]), ev([resp_part]), ev([T.Part(text="Baik, saya sudah sambungkan anda.")])]) == NANTI, "line with call kept, second line dropped")
-check(build_reply([ev([call("not-working")]), ev([resp_part]), ev([T.Part(text="")])]) == HANDOFF_FALLBACK_LINES["not-working"], "silent handoff gets label fallback")
-check(build_reply([ev([call("human-required")]), ev([resp_part])]).startswith("Baik, saya sambungkan"), "unknown label gets default line")
+check(build_reply([ev([call("coverage-unsupported-alternative")]), ev([resp("coverage-unsupported-alternative")]), ev([T.Part(text=NANTI)])]) == NANTI, "call-only escalate, line after tool kept")
+B6_EN = 'The tool output indicates that the area "Labuan" is "not_covered".'
+check(build_reply([ev([call("coverage-unsupported-alternative"), T.Part(text=B6_EN)]), ev([resp("coverage-unsupported-alternative")]), ev([T.Part(text=NANTI)])]) == NANTI,
+      "B6: text beside the escalate call never sent; the line after the tool is")
+check(build_reply([ev([call("not-working")]), ev([resp("not-working")]), ev([T.Part(text="")])]) == HANDOFF_FALLBACK_LINES["not-working"], "silent handoff gets label fallback")
+check(build_reply([ev([call("human-required")]), ev([resp("human-required")])]).startswith("Baik, saya sambungkan"), "unknown label gets default line")
+adv_call = T.Part(function_call=T.FunctionCall(name="advance_purchase_stage", args={"town": "Kapit", "state": "Sarawak"}))
+adv_resp = T.Part(function_response=T.FunctionResponse(name="advance_purchase_stage", response={
+    "status": "not_covered", "area": "Kapit, Sarawak", "escalated": True, "label": "coverage-unsupported-alternative"}))
+check(build_reply([ev([adv_call]), ev([adv_resp])]) == HANDOFF_FALLBACK_LINES["coverage-unsupported-alternative"],
+      "B12: a handoff made by advance_purchase_stage with no text gets the coverage fallback line")
+check(build_reply([ev([adv_call]), ev([adv_resp]), ev([T.Part(text=NANTI)])]) == NANTI, "B12: the not-covered line after the tool is the whole reply")
 check(build_reply([ev([T.Part(text="hi")], author="user"), ev([T.Part(text="draft")], partial=True), ev([T.Part(text="thinking", thought=True), T.Part(text="Jawapan.")])]) == "Jawapan.", "user/partial/thought skipped")
 check(build_reply([ev([T.Part(text="A")]), ev([T.Part(text="A")]), ev([T.Part(text="B")])]) == "A\n\nB", "exact repeats skipped, blank-line join")
 check(build_reply([]) == "", "no events -> empty")

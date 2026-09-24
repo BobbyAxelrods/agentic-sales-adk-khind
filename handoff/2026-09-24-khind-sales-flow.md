@@ -1,93 +1,115 @@
-# Handoff: KHIND sales flow. Next session: fix B6, B12, D6 and E4 from Astra's rerun (58/62)
+# Handoff: KHIND sales flow. Next session: Astra rerun 3 (all 62 rows), then push and open the PR
 
-Earlier versions of this file are in git history: `cc153b1` (the first v2 run) and `de4f6c9`
-(the fix round). Rules, enforcement points and pitfalls are in `CLAUDE.md`; this file does not
-repeat them.
+Earlier versions of this file are in git history:
+- `cc153b1`: the first v2 run;
+- `de4f6c9`: the fix round;
+- `d91a9ab`: rerun 2 (58/62) and its fix directions.
 
-## Where things stand (2026-09-24, 08:55 MYT)
+Rules, enforcement points and pitfalls are in `CLAUDE.md`; this file does not repeat them.
 
-- **Branch** `feat/linear-sales-flow`, 3 commits ahead of `main`:
+## Where things stand (2026-09-24, 09:50 MYT)
+
+- **Branch** `feat/linear-sales-flow`, 5 commits ahead of `main`:
   - `7fa1a34`: gitignore for graphify;
-  - `cc153b1`: the linear flow; the first v2 run passed 53/62 on it;
-  - `de4f6c9`: fixes for that run's 9 failures.
+  - `cc153b1`: the linear flow;
+  - `de4f6c9`: fixes for the first run's 9 failures;
+  - `d91a9ab`: the rerun-2 handoff;
+  - the commit after it: the fixes for rerun 2's 4 failures.
   The branch is not pushed and there is no PR. `docs/` is the user's and stays untracked.
-- **ADK Web** runs as pid 156943, restarted by the user at 07:57:43 MYT, after `de4f6c9`, so it
-  serves the fixed code. It caches the agent: restart it after every code change. Stop and start
-  it in two separate commands (see CLAUDE.md).
-- **Astra's rerun of all 62 rows on `de4f6c9` is done:** 58 Pass, 4 Fail (0 Critical, 2 Major,
-  2 Minor). The run went from 08:00:35 to 08:36:16 MYT (00:00:35Z to 00:36:16Z): 37 sessions and
-  83 user turns in `apps/.adk/session.db`. Run A (with F6) is session `29551bf8`.
-  - Fixed since the first run: A3, B10, B11, C2, D4, D5, G6.
-  - Newly failing: B6 and B12 (Major).
-  - Still failing: D6 and E4 (Minor).
-- **Astra's bundle for the rerun** is under
-  `/mnt/c/Users/User/Documents/Codex/2026-09-24/files-mentioned-by-the-user-khind/outputs/`:
-  folder `KHIND_Smoke_Test_2026-09-24_Rerun2/` (report, results CSV, Evidence, Screenshots) and
-  `KHIND_Smoke_Test_Evidence_2026-09-24_Rerun2.zip`. It is not copied to Obsidian yet.
-- **Records:**
-  - the first run and its audit are in the Obsidian folder
-    `/mnt/d/Obsidian_folder/Personal/Personal/Khind Test/2026-09-24 - KHIND Linear Flow Smoke Test/`,
-    in `Claude Audit of Astra Verdicts.md`;
-  - the fix-round verification is `handoff/verification/fix_run_2026-09-24.txt`.
-- **Uncommitted:** this file.
-
-## The 4 rerun failures: evidence and fix direction
-
-Only B6 and B12 were checked in `session.db` for this handoff; no full audit yet. Astra's verdicts
-are in the rerun report. Find a session by its first message with
-`.venv/bin/python handoff/verification/extract_run.py 2026-09-24T00:00:00Z <out_dir>`.
-
-| Row | What happened (checked in session.db) | Fix direction (to confirm) |
-|---|---|---|
-| B6 (Major) | For "Poskod 87000, Labuan", `advance_purchase_stage` returned `not_covered`. The model then sent `escalate_to_live_agent` together with English reasoning text ("The tool output indicates … I need to call `escalate_to_live_agent` …"). `build_reply` treats text beside an escalate call as the handoff line and drops later text, so the customer got the reasoning, and the correct BM line in the next event was lost. The label and `escalated` were correct. | Do not trust text written beside an escalate call. Either extend `drop_text_beside_coverage_call` to escalate calls, so the text after the tool, or else the label's fallback line, is used; or let `build_reply` prefer the text after the call. Add a unit check for this sequence. |
-| B12 (Major) | For "Nak peti ais 592, saya duduk Kapit Sarawak" the tools were `set_product_interest` then `advance_purchase_stage` (`not_covered`), but the model never called `escalate_to_live_agent`. No `escalated` in State, so the USP was also prepended. No handoff reached the officer. | Make the coverage handoff deterministic: `advance_purchase_stage` escalates itself on `not_covered`, reusing the escalation logic, labels and Chatwoot call. The model then writes only the not-covered line. This also removes the escalate call that caused B6 in the coverage path. |
-| D6 (Minor) | The reply said "8 produk dalam senarai kami" without showing the list. That wording comes from the D6 core rule written in the fix round. | Rule wording: name the 3 categories (peti sejuk, mesin basuh & pengering, penyaman udara) and do not say "senarai" unless `PRODUCT_MENU` is shown. |
-| E4 (Minor) | Style only. A4 has no *bold*. A11 and F6 end with the fixed IC-photo question and have no emoji. A10, the fixed completion line with 👍, passed. | User decision (below): add an emoji to `IC_PHOTO_QUESTION`, which is approved wording, and/or ask for bold and an emoji in every reply; or relax E4. |
+- **ADK Web** runs as pid 156943, started at 07:57:43 MYT, so it still serves `de4f6c9`. It caches
+  the agent. **It must be restarted before Astra runs.** Stop and start it in two separate
+  commands (see CLAUDE.md).
+- **Rerun 2 audit:**
+  - all 4 failures are confirmed, and no pass is overturned (58/62);
+  - B6 was worse on WhatsApp than in ADK Web: `build_reply` would have sent only the English
+    reasoning;
+  - every figure traces to the active product's document;
+  - the only text written beside a tool call in the whole run was B6's.
+- **Obsidian records** (in `/mnt/d/Obsidian_folder/Personal/Personal/Khind Test/`):
+  - the folder `2026-09-24 - KHIND Linear Flow Smoke Test - Rerun 2/` holds Astra's bundle,
+    `Inputs/` (the sheet Astra ran, as of `de4f6c9`) and `Claude Audit of Astra Verdicts.md`;
+  - the zip `2026-09-24 - KHIND Linear Flow Smoke Test - Rerun 2.zip` sits next to it.
+- **User decisions (2026-09-24):**
+  - E4: 📸 is added to `IC_PHOTO_QUESTION` and 😊 to `KERJA_QUESTION`. Every reply needs an emoji;
+    bold is only for key terms.
+  - B6/B12: `advance_purchase_stage` hands an uncovered area to an officer itself.
+  - `TOWN_QUESTION` and `POSTCODE_QUESTION` are approved as written.
+  - Git: commit when the checks pass. Push and open a PR to `main` only after Astra's next rerun.
+- **The fixes** (details in CLAUDE.md, "Where the flow is enforced"):
+  - `advance_purchase_stage` is async. On `not_covered` it calls `escalation_tool.hand_off`, the
+    same code as `escalate_to_live_agent`. A repeated handoff with the same label in the same turn
+    is a no-op.
+  - `drop_text_beside_coverage_or_handoff_call` also drops text beside `escalate_to_live_agent`.
+  - The new callback `fill_empty_handoff_reply` gives a silent handoff turn the label's fixed line.
+  - `build_reply` never sends text beside a coverage or handoff call, and it reads the handoff from
+    the tool results.
+  - Prompts:
+    - the coverage fragment and the escalation triggers no longer ask for an escalate call on
+      `not_covered`;
+    - the D6 rule names the 3 categories and says "senarai" only with the list;
+    - the style rule asks for an emoji in every reply.
+- **Verification** (`handoff/verification/rerun2_fix_run_2026-09-24.txt`):
+  - `unit_checks.py`: 138 of 138 (20 new);
+  - `webhook_order.py`: 7 of 7;
+  - `scenarios.py`, real Gemini on port 8001: run 1 62 of 62; run 2 62 of 63;
+  - new scenarios: `labuan` (B6) and `product_uncovered` (B12). Both passed twice: the tool made
+    the handoff, the model made no escalate call, and the reply was exactly the not-covered line.
+  - Run 2's only failure is a PDPA check added after run 1. See decision 1 below.
+- **Smoke-test package updated for the new contract**, and the sheet regenerated:
+  - B2, B5-B7 and B12 now expect the handoff in the `advance_purchase_stage` response, and no
+    escalate call;
+  - B6, D6 and E4 have new criteria;
+  - the Reference sheet adds the postcode, kerja and IC-photo questions;
+  - the Astra prompt changes rule 7, the not-a-failure list and the known issues, and adds a
+    comparison with rerun 2;
+  - the guide's watch list is refreshed.
 
 ## Decisions to ask the user first
 
-1. **E4:** change the approved IC-photo question (e.g. add 📸) and make bold and an emoji
-   mandatory, or relax the E4 criterion?
-2. **B12/B6:** should `advance_purchase_stage` escalate by itself on `not_covered`? It changes
-   the tool contract; the smoke sheet's B rows and CLAUDE.md need updating.
-3. **Unapproved wording** (written in the fix round, not yet confirmed by the user):
-   - `TOWN_QUESTION`: "Boleh kongsikan nama bandar atau kawasan pemasangan cik/tuan di {region}? 😊"
-   - `POSTCODE_QUESTION`: "Boleh kongsikan poskod kawasan pemasangan cik/tuan? 😊"
-4. **Obsidian:** copy the Rerun2 bundle as a subfolder of the 2026-09-24 folder, or as its own
-   dated folder?
-5. **Push and PR:** push `feat/linear-sales-flow` and open a PR to `main` after the next rerun?
-   Also: commit this handoff file?
+1. **PDPA name echo in the form step (open issue, Critical under row A8).**
+   - Evidence: the scripted happy path thanked the customer by name in both runs today ("Terima
+     kasih, Ali!" and "Terima kasih, Ali bin Abu! 😊"), and in the 2 earlier scripted runs.
+   - In the same reply the model also re-lists the missing fields in the form layout.
+   - Astra's A8 passed in rerun 2, so the echo is intermittent. It can still fail rerun 3.
+   - Recommendation: a code guard. Either remove personal values from the reply in a turn where
+     `save_application_details` ran, or reply with a fixed line that names the missing fields.
+     The fixed line is new wording, so the user must approve it.
+2. **Media on a handoff turn.** On a first pick with an uncovered area (B12), the webhook still
+   sends the product's 2 images and 1 video: `_deliver_media_before_text` does not check
+   `escalated`. Should a turn that escalated skip the media? ADK Web cannot show this; check it in
+   `webhook_order.py`.
 
 ## Activities for the next session, in order
 
-1. Ask decisions 1-5 above.
-2. **Audit Rerun2 in full**, as for the first run:
-   - dump the run with `extract_run.py`;
-   - compare it with `KHIND_Agent_Smoke_Test_Results_2026-09-24_Rerun2.csv`;
-   - trace every figure to the chunk `source`, `scope` and `products`;
-   - spot-check passes (B-row handoff lines, PDPA rows A8-A10 and F6, first-pick replies);
-   - write the audit note next to the copied bundle.
-3. **Plan mode:** confirm the fix directions in the table above, then implement:
-   - add regression checks to `handoff/verification/unit_checks.py`;
-   - add real-Gemini scenarios to `scenarios.py`: Labuan, product + uncovered area in one
-     message, TV/microwave, post-form emoji;
-   - run on port 8001 with `KHIND_API_BASE=http://127.0.0.1:8001`, twice.
-4. **Update the smoke sheet** in `handoff/smoke-test/build_smoke_test_v2.py` for any contract
-   change (B2, B5-B7, B12 tool expectations; E4), then regenerate it with `uv`.
-5. **Ask the user** to restart ADK Web, and run Astra on the B rows, D1-D7, E4 and a regression
-   sample (A1-A11), or on all 62 rows if the tool contract changed.
-6. **Update** CLAUDE.md "Open issues", this file, and the Obsidian record. Commit with the user's
-   OK.
+1. Ask decisions 1 and 2. Implement what the user approves, with offline checks and two scenario
+   runs, before the Astra run.
+2. Ask the user to restart ADK Web, then run Astra on **all 62 rows**, because the tool contract
+   changed. Use the regenerated `KHIND_Agent_Smoke_Test_Prompts_v2.csv` and the updated
+   `KHIND-Astra-ComputerUse-Prompt-v2.md`.
+3. Audit rerun 3 as for rerun 2:
+   - dump it with `.venv/bin/python handoff/verification/extract_run.py <start UTC> <out_dir>`;
+   - compare it with Astra's CSV;
+   - trace every figure to the chunk `source`;
+   - look for text beside tool calls;
+   - check the handoff rows: B2, B5-B7, B12, F1-F3, F7-F9.
+4. File the bundle in Obsidian the same way (its own dated folder, `Inputs/`, zip, audit note).
+5. If rerun 3 passes: run the `code-review` skill on `main..feat/linear-sales-flow`, then push and
+   open the PR. The user approved this order.
+6. Update CLAUDE.md "Open issues", this file and the Obsidian record, and commit.
 
 ## Backlog (details in CLAUDE.md "Open issues")
 
 1. `apps/runner.py`: the session layer, so the Chatwoot webhook works; then a real phone test.
 2. Create the Chatwoot `not-working` label.
-3. RAG corpus: delete the older duplicate files; KHIND must confirm the DryMaster price; the aircond
-   monthly price is missing.
+3. RAG corpus:
+   - delete the older duplicate files;
+   - KHIND must confirm the DryMaster price;
+   - the aircond monthly price is missing.
 4. The IC-photo step never ends, because the webhook drops messages that hold only images.
 5. `KHIND_MASTERPROMPT.md` and `TASK_TRACKER.md` still describe the old flow.
-6. **Test gaps**, with no row for:
+6. A missing-fact reply promises that an officer will confirm, but it hands nobody the chat (seen
+   in D7 for a discount request). Decide whether officers see these chats.
+7. **Test gaps**, with no row for:
    - a product question after the RM1 invite or during the form;
    - a customer who declines the eligibility check;
    - a comparison between two products;
@@ -95,35 +117,29 @@ are in the rerun report. Find a session by its first message with
 
 ## Read these instead of re-deriving
 
-- `CLAUDE.md`: the flow, where each rule is enforced, pitfalls (vertexai region, `State.to_dict()`,
-  callback order, pkill), and open issues.
-- The approved plan and root causes of the fix round:
-  `/home/risdin/.claude/plans/witty-tumbling-ladybug.md`.
-- Commits: `git show de4f6c9` (the fix list is in the message) and `git show cc153b1`.
-- Astra's rerun report and CSV: in the `KHIND_Smoke_Test_2026-09-24_Rerun2/` folder above. Its
-  "Comparison with earlier run today" section lists the changed expectations.
-- The first-run audit: `Claude Audit of Astra Verdicts.md` in the Obsidian folder above.
+- `CLAUDE.md`: the flow, where each rule is enforced, pitfalls and open issues.
+- The rerun-2 audit: `Claude Audit of Astra Verdicts.md` in the Obsidian Rerun 2 folder above.
+- Commits:
+  - `git show d91a9ab` (rerun 2 findings);
+  - the fix commit after it;
+  - `git show de4f6c9`.
 - The test tools in `handoff/verification/`:
-  - `unit_checks.py`: 118 checks;
+  - `unit_checks.py`: 138 checks;
   - `webhook_order.py`;
-  - `scenarios.py`: 15 scenarios;
+  - `scenarios.py`: 17 scenarios, 63 checks;
   - `extract_run.py`;
-  - `fix_run_2026-09-24.txt`.
+  - the run logs `fix_run_2026-09-24.txt` and `rerun2_fix_run_2026-09-24.txt`.
 - The smoke-test package in `handoff/smoke-test/`:
   - the builder;
   - the v2 csv/xlsx;
-  - `KHIND-Astra-ComputerUse-Prompt-v2.md`, which Astra uses unchanged.
+  - the guide;
+  - `KHIND-Astra-ComputerUse-Prompt-v2.md`.
 
 ## Suggested skills
 
-- `diagnose`: for B6 and B12. Reproduce them with `scenarios.py` on port 8001, minimise, fix, and
-  add a regression check.
-- `tdd`: to write the B6 (reasoning text beside an escalate call) and B12 (no escalate after
-  `not_covered`) checks first, or to start turning `handoff/verification/` into a pytest suite.
-- `code-review`: review the branch (`main..feat/linear-sales-flow`) before pushing or opening a PR.
-- `anthropic-skills:xlsx`: optional. Fill the v2 xlsx Summary from the Rerun2 CSV (columns G, I,
-  J, K).
-- `claude-md-management:revise-claude-md`: update CLAUDE.md after the fixes.
+- `code-review`: review the branch before pushing or opening the PR.
+- `tdd`: for the PDPA guard, if the user approves it. Write the echo check first.
+- `claude-md-management:revise-claude-md`: update CLAUDE.md after rerun 3.
 - `simple-english`: the handoff, CLAUDE.md and the Obsidian notes are written in short, plain
   English; keep that style.
 

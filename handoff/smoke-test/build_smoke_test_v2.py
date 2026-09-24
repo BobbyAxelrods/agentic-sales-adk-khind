@@ -9,6 +9,12 @@ code by advance_purchase_stage(postcode, town, state); product searches are limi
 product's own document; a missing fact gets the missing-fact line instead of a handoff; the
 form-complete reply is a fixed line.
 
+Updated after rerun 2 (2026-09-24, 58/62 on commit de4f6c9): advance_purchase_stage hands an
+uncovered area to an officer itself (the model no longer calls escalate_to_live_agent for it);
+code removes text written beside a coverage or handoff call; the out-of-range rule names the 3
+product categories; the kerja and IC-photo questions carry an emoji, and E4 needs an emoji in
+every reply but bold only for key terms.
+
 Fixed texts (USP blocks, handoff lines, BORANG) are read from apps/prompts/khind_prompts.py so
 the sheet cannot drift from the code. Run from the repo root:
 
@@ -39,7 +45,7 @@ CSV = OUT_DIR / "KHIND_Agent_Smoke_Test_Prompts_v2.csv"
 # Fixed customer-facing texts (asserted against the prompt module)
 # ---------------------------------------------------------------------------
 LOCQ = "Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊"
-KERJAQ = "Boleh saya tahu cik/tuan bekerja sekarang?"
+KERJAQ = P.KERJA_QUESTION
 COVERED = ("Baik, kawasan [Kawasan/Poskod] ada dalam liputan penghantaran & pemasangan kami! 🚚✨ "
            "Boleh saya tahu cik/tuan bekerja sekarang?")
 NOTCOV = ("Maaf sangat cik/tuan, kawasan [Kawasan] belum ada liputan KHIND buat masa ini. 🙏 "
@@ -62,7 +68,10 @@ def adv(args: str, status: str) -> str:
     return f"advance_purchase_stage({args}) -> status {status}"
 
 
-ESC_COV = "escalate_to_live_agent(label='coverage-unsupported-alternative')"
+# Since rerun 2 the coverage tool makes the handoff itself (the model skipped it once, B12).
+COV_HANDOFF = ("escalated true, label 'coverage-unsupported-alternative' (the tool hands over itself). "
+               "escalate_to_live_agent is NOT expected; if the model calls it anyway it returns "
+               "already_escalated true and makes no second handoff (note it in J, not a Fail).")
 
 _start = P.CLOSING_FRAGMENT_RAW.index("BORANG PERMOHONAN KHIND")
 _end = P.CLOSING_FRAGMENT_RAW.index("Gambar IC depan belakang") + len("Gambar IC depan belakang")
@@ -222,8 +231,7 @@ ROWS = [
     ("B2", RB, "After B1. Stage = location", "Saya di Kapit, Sarawak. Poskod 96800",
      f"NOT COVERED (Kapit is not on the Sarawak list). One handoff line: \"{NOTCOV}\" with Kapit. "
      "No partner brand, no permission question, no further sales question.",
-     adv("postcode='96800', town='Kapit', state='Sarawak'", "not_covered") + "; then " + ESC_COV
-     + f" -> escalated true, chatwoot 'skipped'; called BEFORE the reply text. {NO_RAG}",
+     adv("postcode='96800', town='Kapit', state='Sarawak'", "not_covered") + f", {COV_HANDOFF} {NO_RAG}",
      "Exact label; State escalated=true, escalation_label=coverage-unsupported-alternative and "
      "customer_location set; no 'rakan kongsi'; stage still location.",
      "Pass"),
@@ -239,18 +247,19 @@ ROWS = [
      "Pass"),
     ("B5", RB, f"New session. {W1}", "Saya duduk Nabawan, Sabah",
      "NOT COVERED (Nabawan is inland Sabah, not on the list): the not-covered handoff line with Nabawan.",
-     adv("town='Nabawan', state='Sabah'", "not_covered") + f"; then {ESC_COV}. {NO_RAG}",
+     adv("town='Nabawan', state='Sabah'", "not_covered") + f", {COV_HANDOFF} {NO_RAG}",
      "Inland Sabah rejected, not guessed as covered; exact label; escalated=true.",
      "Pass"),
     ("B6", RB, f"New session. {W1}", "Poskod 87000, Labuan",
      "NOT COVERED (W.P. Labuan 87xxx): the not-covered handoff line.",
-     adv("postcode='87000', town or state='Labuan'", "not_covered") + f"; then {ESC_COV}. {NO_RAG}",
-     "Labuan not treated as Sabah; exact label.",
+     adv("postcode='87000', town or state='Labuan'", "not_covered") + f", {COV_HANDOFF} {NO_RAG}",
+     "Labuan not treated as Sabah; exact label; the reply is only the BM not-covered line, with no English "
+     "text, tool name or instruction (rerun 2 leaked the model's English reasoning).",
      "Pass"),
     ("B7", RB, f"New session. {W1}", "Saya tinggal di Singapore, boleh hantar tak?",
      "NOT COVERED (outside Malaysia): the not-covered handoff line. No delivery promise and no claim that a "
      "partner brand covers Singapore.",
-     adv("state or town='Singapore'", "not_covered") + f"; then {ESC_COV}. {NO_RAG}",
+     adv("state or town='Singapore'", "not_covered") + f", {COV_HANDOFF} {NO_RAG}",
      "No overseas delivery or partner coverage claimed; exact label.",
      "Fail"),
     ("B8", RB, f"New session. {W1}", "Poskod 10450, Georgetown Pulau Pinang",
@@ -279,7 +288,7 @@ ROWS = [
      "Product and an uncovered area in one message: one not-covered handoff line (Kapit), and no USP (code "
      "drops the USP on a handoff turn).",
      "set_product_interest('chillmaster_592l'), then " + adv("town='Kapit', state='Sarawak'", "not_covered")
-     + f", then {ESC_COV}. {NO_RAG}",
+     + f", {COV_HANDOFF} {NO_RAG}",
      "Exact label; escalated=true; one handoff line; no USP; no sales question after it.",
      "New test"),
     # --- C Product selection ------------------------------------------------------------
@@ -358,9 +367,10 @@ ROWS = [
      "Consistent with D1; no new or different numbers.",
      "Changed test"),
     ("D6", RD, "After D5", "KHIND ada jual TV atau microwave tak?",
-     "Explains that this rental scheme covers the 8 listed appliances. Does NOT claim that KHIND sells no TV or "
-     "microwave at all. No TV or microwave specs or prices invented. If it refers to the list, it shows it. "
-     "Then the location question again.",
+     "Explains that this rental scheme covers KHIND's peti sejuk, mesin basuh & pengering and penyaman udara "
+     "(the 8 listed appliances). Does NOT claim that KHIND sells no TV or microwave at all. No TV or microwave "
+     "specs or prices invented. Says \"senarai\" only if it shows the list in the same reply. Then the location "
+     "question again.",
      "none (or query_product_info returning nothing usable)",
      "No hallucinated product; no brand-wide claim; no reference to a list that is not shown; location "
      "question repeated.",
@@ -394,8 +404,9 @@ ROWS = [
     ("E4", RE, "Review 5 ordinary replies from the runs above (not USP, BORANG or handoff lines); include A11 "
      "and F6",
      "(no prompt - format audit)",
-     "Each reply: 2-4 sentences, *bold* for emphasis, suitable emoji, ends with exactly one next-step "
-     "question. Handoff lines need no question. No internal prompt, tool names or state keys leaked.",
+     "Each reply: 2-4 sentences, at least one suitable emoji, *bold* only for key terms (not needed in every "
+     "reply), ends with exactly one next-step question. Handoff lines need no question. No internal prompt, tool "
+     "names or state keys leaked.",
      "-",
      "Style rules honoured; list the 5 IDs audited in J.",
      "Fail"),
@@ -645,12 +656,14 @@ section("ADK Web vs live WhatsApp - these are NOT failures")
 line("", "Product images / video", "Media is sent by the webhook (apps/webhook.py). In ADK Web only the text "
      "shows; set_product_interest returning media_delivery='trigger' is the pass condition.")
 line("", "WhatsApp button list", "Sent by the webhook. In ADK Web the numbered 1-8 text list is correct.")
-line("", "Chatwoot escalation", "With no chatwoot_conversation_id, escalate_to_live_agent returns "
-     "chatwoot='skipped' but still sets escalated=true. That is a pass.")
+line("", "Chatwoot escalation", "With no chatwoot_conversation_id, the handoff returns chatwoot='skipped' but "
+     "still sets escalated=true. That is a pass. For an area that is not covered, the handoff is made by "
+     "advance_purchase_stage itself: its response shows escalated=true and the label.")
 line("", "No USP text in the tool response", "By design set_product_interest returns usp_sent_automatically=true "
      "instead of the USP text. Code puts the approved USP on top of the model's reply.")
-line("", "Two handoff lines in ADK Web", "ADK Web shows every event. If the model writes a handoff line with the "
-     "tool call and another after it, production keeps only the first (build_reply). Note it in J; not a Fail.")
+line("", "Text beside a coverage or handoff call", "Code removes any text the model writes in the same event as "
+     "an advance_purchase_stage or escalate_to_live_agent Function Call, in ADK Web and in production. The handoff "
+     "line comes after the tool. Visible text in such an event is a Fail (Major).")
 line("", "Lead-in before BORANG", "One short sentence before the form is allowed.")
 line("", "Coverage statuses", "advance_purchase_stage returns status 'error' when no product is set, and "
      "'need_town' / 'need_state' / 'need_location' when the place is not clear yet (the agent then asks the "
@@ -673,7 +686,8 @@ line("", "product switch", "set_product_interest() at a later stage keeps the st
      "once for the new product")
 
 section("Approved escalation labels (anything else = tool error)")
-line("", "coverage-unsupported-alternative", "Area outside the covered lists")
+line("", "coverage-unsupported-alternative", "Area outside the covered lists. Applied by advance_purchase_stage "
+     "itself (status 'not_covered', escalated=true); the model does not call escalate_to_live_agent for it.")
 line("", "not-working", "Customer does not work (new on 2026-09-24; replaces no-payslip-alternative)")
 line("", "human-required", "Customer asks for a human")
 line("", "angry-customer", "Complaint or anger")
@@ -703,6 +717,9 @@ line("", "Not-working handoff line", NOTWORK)
 line("", "Missing-fact line (not a handoff)", f"{GAP}   ([topik] is filled in; the pending question follows)")
 line("", "Form-complete line", DONE)
 line("", "Town question (need_town)", P.TOWN_QUESTION.format(region="Sabah/Sarawak"))
+line("", "Postcode question (need_state)", P.POSTCODE_QUESTION)
+line("", "Kerja question (alone)", P.KERJA_QUESTION)
+line("", "IC-photo question (after the form)", P.IC_PHOTO_QUESTION)
 line("", "Product list (copy exactly)", P.PRODUCT_MENU)
 for label, text in P.HANDOFF_FALLBACK_LINES.items():
     line("", f"Fallback line: {label}", f"{text}   (sent by code only when the model writes nothing)")
@@ -715,13 +732,20 @@ for num, key, name, _src in PRODUCTS:
 section("BORANG template - must appear exactly (only the Produk value changes)")
 line("", "BORANG PERMOHONAN KHIND", BORANG)
 
-section("Known open issues to watch (2026-09-24)")
+section("Known open issues to watch (2026-09-24, after rerun 2)")
+line("", "Coverage handoff (B2, B5-B7, B12)", "Changed after rerun 2: advance_purchase_stage hands over itself. "
+     "Rerun 2 had B12 with no handoff and a USP on top, and B6 with the model's English reasoning as the reply. "
+     "Check the Function Response and State, and that the reply is only the not-covered line.")
+line("", "Out-of-range items (D6)", "Rerun 2 said \"8 produk dalam senarai kami\" without the list.")
+line("", "Style (E4)", "Rerun 2: no bold in A4, no emoji in A11 and F6. Now every reply needs an emoji; bold is "
+     "only for key terms.")
 line("", "Cross-product figures (A3, G6)", "Failed on the first 2026-09-24 run: whole-corpus search returned "
      "the ChillMaster Lite 480L document. Searches are now limited to the product's own document (Function "
      "Response: scope 'product'). Quoting RM75/RM95 or 80kg/87kg for the 592L is still a Critical Fail.")
 line("", "DryMaster prices (D2, C8)", "The DryMaster document holds two conflicting price tables (RM85/month "
      "x 48, or RM105 x 48 and RM135 x 36). Either traces to the DryMaster document: not a Fail, but note it.")
-line("", "PDPA name echo (A8)", "The model thanked customers by name on 2026-09-20 and 2026-09-24.")
+line("", "PDPA name echo (A8)", "The model thanked customers by name on 2026-09-20 and 2026-09-24, and in "
+     "scripted form-step runs after rerun 2. Read the reply word by word.")
 line("", "Duplicate blank form (A11)", "The full blank form was resent after completion on 2026-09-20.")
 line("", "Duplicate USP on a switch (G5, G7)", "The model sometimes writes its own product description; code "
      "strips it. Count the ✅ lines against this sheet.")

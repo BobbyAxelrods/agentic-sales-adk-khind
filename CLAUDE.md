@@ -18,7 +18,9 @@ Strictly linear, one step at a time:
    model and not by RAG. The model passes what the customer wrote to
    `advance_purchase_stage(postcode, town, state)`, which returns a status:
    - `ok` (covered): location moves to qualification, then the covered line and "bekerja sekarang?".
-   - `not_covered`: `escalate_to_live_agent("coverage-unsupported-alternative")`, then the "nanti" line.
+   - `not_covered`: the tool itself hands the chat to an officer (label
+     `coverage-unsupported-alternative`, same Chatwoot call as `escalate_to_live_agent`), then the
+     model sends the "nanti" line. The model does not call `escalate_to_live_agent` for it.
    - `need_town` (Sabah/Sarawak without a town), `need_state` (a town with no state or postcode),
      or `need_location`: the agent asks the returned question. A Peninsular state alone is covered.
 4. Not working (including students, pensioners, "kawan yang kerja nak ambil"):
@@ -46,7 +48,8 @@ stage. There is no Q&A stage and no payslip question any more.
     when no product is set. Writes `customer_location` (read by the Chatwoot handoff note) and keeps
     a partial answer in `location_draft`, so "Kapit" joins an earlier "96800". Only the location
     step moves the stage (legacy `product`/`discovery` count as location). Later, a call with no
-    place is a no-op.
+    place is a no-op. It is async: on `not_covered` it calls `escalation_tool.hand_off` and returns
+    `escalated` and `label`.
   - `find_product_keys(text)`: the products named in free text (longest alias first, no bare
     numbers). `query_product_info` uses it to choose the document to search.
 - `apps/services/coverage.py`: `check_coverage`, with the Sabah/Sarawak town lists, town aliases
@@ -63,22 +66,29 @@ stage. There is no Q&A stage and no payslip question any more.
   fixed questions and lines (`LOCATION_QUESTION`, `KB_GAP_LINE`, `APPLICATION_COMPLETE_LINE` …).
   All fixed customer-facing text lives here.
 - `apps/services/replies.py`
-  - `drop_text_beside_coverage_call` (after-model callback): removes text written in the same
-    response as an `advance_purchase_stage` call, before the verdict exists.
+  - `drop_text_beside_coverage_or_handoff_call` (after-model callback): removes text written in
+    the same response as an `advance_purchase_stage` call (before the verdict exists) or an
+    `escalate_to_live_agent` call (where the model once wrote its English reasoning, B6).
   - `insert_pending_usp` (after-model callback): puts each pending USP, word for word, on top of
     the turn's first text reply. It strips any product feature block the model wrote itself. On a
     plain pick it keeps only the question: `LOCATION_QUESTION` at the location step, else the
     model's closing question. A pick is not plain when `query_product_info` or
     `advance_purchase_stage` ran in the same turn; both set `reply_facts_invocation` to the turn's
     id. A turn that escalated gets no USP.
-  - `build_reply` (used by `run_turn`): keeps text written alongside tool calls, skips exact
-    repeats, allows one handoff line per turn, and falls back to the label's fixed line.
-- `apps/agent.py`: registers both callbacks, in that order; `max_output_tokens=2048`,
+  - `fill_empty_handoff_reply` (after-model callback): a handoff turn whose final reply has no
+    text gets the label's fixed line (`HANDOFF_FALLBACK_LINES`), in ADK Web too.
+  - `build_reply` (used by `run_turn`): keeps text written alongside other tool calls (never beside
+    a coverage or handoff call), skips exact repeats, and falls back to the label's fixed line. It
+    reads the handoff from the tool results, so the coverage tool's handoff counts.
+- `apps/agent.py`: registers the three callbacks, in that order; `max_output_tokens=2048`,
   `thinking_budget=1024`.
 - `apps/webhook.py`: media first (waits at most 20 s), then text, then `set_conversation_pending`.
   An upload that finishes late sets pending again, unless the turn escalated.
 - `apps/tools/escalation_tool.py`: labels are `coverage-unsupported-alternative`, `not-working`,
-  `human-required`, `angry-customer`, `rag-error`. `no-payslip-alternative` is gone.
+  `human-required`, `angry-customer`, `rag-error`. `no-payslip-alternative` is gone. `hand_off` is
+  shared by `escalate_to_live_agent` and `advance_purchase_stage`: it makes the Chatwoot call, sets
+  `escalated` and `escalation_label`, and records the turn in `escalation_invocation`. A second
+  handoff with the same label in the same turn is a no-op (`already_escalated`).
 
 ## Easy to get wrong
 
@@ -87,6 +97,10 @@ stage. There is no Q&A stage and no payslip question any more.
   closing fragment, not the coverage fragment.
 - `is_final_response()` drops text the model writes in the same step as a tool call. Always build
   replies with `build_reply`.
+- Do not leave a required step to the model when code can do it. In rerun 2 the model skipped the
+  escalate call after `not_covered` once (B12) and wrote its English reasoning beside it once
+  (B6). That is why the coverage tool hands over itself.
+- `advance_purchase_stage` is async, so offline checks call it through `asyncio.run`.
 - Do not hand the model USP text to copy. In stored dev sessions it paraphrased the USP every time,
   and in tests it sometimes wrote a second USP with claims not in the approved text. After a pick
   it also adds praise or invented claims ("pilihan popular", "jimat elektrik sehingga 50%") in
@@ -110,11 +124,12 @@ stage. There is no Q&A stage and no payslip question any more.
 
 ## Open issues (as of 2026-09-24; update as they are fixed)
 
-- Smoke test v2 (2026-09-24, Astra in ADK Web): 53 of 62 rows passed on commit `cc153b1`, and an
-  audit of the session database confirmed every verdict. The 9 failures (A3, B10, B11, C2, D4, D5,
-  D6, E4, G6) are fixed in the next commit and pass offline checks and scripted real-Gemini chats
-  (`handoff/verification/fix_run_2026-09-24.txt`). The full 62-row Astra rerun is still to do,
-  against the regenerated v2 sheet. Status and next steps: `handoff/2026-09-24-khind-sales-flow.md`.
+- Smoke test v2 (2026-09-24, Astra in ADK Web): 53 of 62 on `cc153b1`, then 58 of 62 on
+  `de4f6c9` (rerun 2).
+  - Rerun 2's 4 failures (B6, B12, D6, E4) are fixed in the next commit. Offline checks and
+    scripted real-Gemini chats pass (`handoff/verification/rerun2_fix_run_2026-09-24.txt`).
+  - The tool contract changed, so the next Astra run covers all 62 rows. Status and next steps:
+    `handoff/2026-09-24-khind-sales-flow.md`.
 
 - The Chatwoot webhook fails on every message under ADK 1.31. `apps/runner.py` calls async session
   methods without `await`, so the first `patch_session_state` raises. Even when awaited,
@@ -128,7 +143,12 @@ stage. There is no Q&A stage and no payslip question any more.
   - The DryMaster document holds two conflicting price tables (RM85/month for 48 months, against
     RM105 for 48 and RM135 for 36). KHIND must confirm which is current.
   - The aircond document has no monthly price, so the agent sends the missing-fact line.
-- In the form step the model repeated a customer's name, despite the rule against echoing details.
+- In the form step the model thanks the customer by name ("Terima kasih, Ali bin Abu!"), despite
+  the rule against echoing details: in 2 of 2 scripted runs after the rerun-2 fixes, and in the
+  2 earlier runs. It also lists the missing fields in the form layout. This is a PDPA risk (A8 is
+  a Critical row).
+- On a first pick with an uncovered area (B12), the webhook still sends the product's 2 images and
+  1 video, because media delivery does not check `escalated`.
 - The `not-working` label must be created in Chatwoot so these handoffs show in filters.
 - `escalated` never resets.
 - The IC-photo step never ends: `webhook.py` drops messages that hold only images.
@@ -149,3 +169,10 @@ stage. There is no Q&A stage and no payslip question any more.
   - the first-pick guard.
 
   The escalation tool's `dict(state)` crash was also fixed.
+- 2026-09-24 (rerun 2, 58 of 62): the audit confirmed all 4 failures. The fixes:
+  - `advance_purchase_stage` hands an uncovered area to an officer itself;
+  - text beside a coverage or handoff call is dropped;
+  - the out-of-range rule names the 3 product categories;
+  - the kerja and IC-photo questions carry an emoji, and every reply needs one.
+
+  The audit note is in the Obsidian folder `2026-09-24 - KHIND Linear Flow Smoke Test - Rerun 2`.
