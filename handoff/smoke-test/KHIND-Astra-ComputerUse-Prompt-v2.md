@@ -199,6 +199,9 @@ Do not report these as bugs:
   As long as escalated: true appears in State, it passed.
 - After a not_covered result the model calls escalate_to_live_agent anyway, and it returns
   already_escalated: true. No second handoff is made. Note it in J; it is not a Fail.
+- Before any product is picked, query_product_info alone picks the one product its query names:
+  its Function Response shows product_selected, and State has product_interest. That counts as
+  the pick (E1, C2); no separate set_product_interest call is needed.
 - advance_purchase_stage returns status "error" when no product is set or at the end of the
   stage machine. That is designed behaviour.
 - The State tab of a brand-new session is empty.
@@ -215,8 +218,9 @@ Rerun 2 of 2026-09-24 (commit de4f6c9) passed 58 of 62. Its 4 failures were fixe
 - E4 (Minor): no bold in A4, no emoji in A11 and F6. Every reply now needs an emoji; bold is only
   for key terms.
 Also watch:
-- A8: the model thanked customers by name in earlier runs, and in scripted form-step runs after
-  rerun 2. Read the reply word by word (rule 6).
+- A8: the model thanked customers by name in earlier runs and in scripted form-step runs. Code
+  now removes the customer's personal values from every reply. Still read the reply word by word
+  (rule 6).
 - A3 and G6: check the "source" of every chunk before accepting a number (rule 5).
 - G5 and G7: after a product switch, count the ✅ lines against the Reference sheet (rule 2).
 

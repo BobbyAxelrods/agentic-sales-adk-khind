@@ -1,5 +1,7 @@
 """Shape the text the customer receives from one agent turn.
 
+- strip_personal_values: after_model_callback that removes the personal values the customer
+  gave (name, IC, phone, email, address) from the model's text.
 - drop_text_beside_coverage_or_handoff_call: after_model_callback that removes text written
   in the same response as an advance_purchase_stage or escalate_to_live_agent call.
 - insert_pending_usp: after_model_callback that puts the approved product USP, word
@@ -40,9 +42,19 @@ REPLY_FACTS_KEY = "reply_facts_invocation"
 HANDOFF_TURN_KEY = "escalation_invocation"
 _ESCALATION_TOOL = "escalate_to_live_agent"
 _COVERAGE_TOOL = "advance_purchase_stage"
+_SAVE_TOOL = "save_application_details"
 # Text the model writes beside these calls is never sent (see
 # drop_text_beside_coverage_or_handoff_call).
 _TEXT_FREE_TOOLS = frozenset({_COVERAGE_TOOL, _ESCALATION_TOOL})
+
+# Application fields that must never be repeated to the customer (PDPA).
+_NAME_FIELDS = ("full_name", "emergency_contact_name")
+_NUMBER_FIELDS = ("ic_number", "whatsapp_number", "emergency_contact_phone")
+_TEXT_FIELDS = ("email", "installation_address")
+# Words that join the parts of a Malaysian name; they are not removed on their own.
+_NAME_LINKS = frozenset({"bin", "binti", "bt", "bte", "a/l", "a/p", "anak", "s/o", "d/o"})
+# An optional title before a name, but not the "tuan" of "cik/tuan".
+_TITLE = r"(?:(?<![\w/])(?:Encik|En\.|Cik|Tuan|Puan|Pn\.)\s+)?"
 
 
 def _visible_text(parts: Optional[list[genai_types.Part]]) -> str:
@@ -82,6 +94,77 @@ def _closing_question(text: str) -> str:
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     asking = [p for p in paragraphs if "?" in p]
     return (asking or paragraphs or [""])[-1]
+
+
+def _personal_patterns(details: dict) -> list[re.Pattern]:
+    """Patterns for the personal values in `details`: full names first, single name words last."""
+    names: list[re.Pattern] = []
+    others: list[re.Pattern] = []
+    words: list[re.Pattern] = []
+    for field in _NAME_FIELDS:
+        value = str(details.get(field) or "").strip()
+        if not value:
+            continue
+        # A removed name takes its leading comma and title with it ("Terima kasih, Ali!").
+        names.append(re.compile(rf"(?:,\s*)?{_TITLE}(?<!\w){re.escape(value)}(?!\w)", re.IGNORECASE))
+        for word in value.split():
+            if len(word) >= 3 and word.lower() not in _NAME_LINKS:
+                # Only where it is capitalised, so "Kasih" in a name leaves "terima kasih" alone.
+                cap = word[0].upper() + word[1:].lower()
+                words.append(re.compile(rf"(?:,\s*)?{_TITLE}(?<!\w){re.escape(cap)}(?!\w)"))
+    for field in _NUMBER_FIELDS:
+        digits = re.sub(r"\D", "", str(details.get(field) or ""))
+        if len(digits) >= 7:
+            # The same digits, with or without dashes and spaces between them.
+            others.append(re.compile(r"(?<!\d)" + r"[-\s]?".join(digits) + r"(?!\d)"))
+    for field in _TEXT_FIELDS:
+        value = str(details.get(field) or "").strip()
+        if value:
+            others.append(re.compile(re.escape(value), re.IGNORECASE))
+    return names + others + words
+
+
+def _remove_all(text: str, patterns: list[re.Pattern]) -> str:
+    """Remove every match, then tidy the spaces and punctuation left behind."""
+    cleaned = text
+    for pattern in patterns:
+        cleaned = pattern.sub("", cleaned)
+    if cleaned == text:
+        return text
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"[ \t]+([,.!?])", r"\1", cleaned)
+    cleaned = re.sub(r",([.!?])", r"\1", cleaned)
+    cleaned = re.sub(r"(^|\n)[ \t]*,[ \t]*", r"\1", cleaned)
+    cleaned = re.sub(r"[ \t]+(?=\n|$)", "", cleaned)
+    return re.sub(r"(^|\n)([a-z])", lambda m: m.group(1) + m.group(2).upper(), cleaned)
+
+
+def strip_personal_values(callback_context: CallbackContext, llm_response: LlmResponse) -> None:
+    """Remove the personal values the customer gave from the model's text (PDPA).
+
+    In the form step the model thanked customers by name ("Terima kasih, Ali bin Abu!") in
+    most scripted runs, whatever the prompt said. The values come from the saved application
+    details and from any save_application_details call in the same response, so text written
+    beside that call is covered too. A name word is removed only where it is capitalised; a
+    number with or without separators.
+
+    Edits the response in place and returns None, so the callbacks after it still run (ADK
+    stops at the first callback that returns a response).
+    """
+    if llm_response.partial or not llm_response.content:
+        return None
+    parts = llm_response.content.parts or []
+    details = dict(callback_context.state.get("application_details") or {})
+    for part in parts:
+        if part.function_call and part.function_call.name == _SAVE_TOOL:
+            details.update({k: v for k, v in (part.function_call.args or {}).items() if v})
+    patterns = _personal_patterns(details)
+    if not patterns:
+        return None
+    for part in parts:
+        if part.text and not part.thought:
+            part.text = _remove_all(part.text, patterns)
+    return None
 
 
 def drop_text_beside_coverage_or_handoff_call(

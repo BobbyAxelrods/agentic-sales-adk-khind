@@ -20,7 +20,7 @@ from vertexai.rag.utils.resources import RagResource, RagRetrievalConfig
 
 from apps.config import settings
 from apps.services.replies import REPLY_FACTS_KEY
-from apps.tools.session_tools import find_product_keys
+from apps.tools.session_tools import find_product_keys, set_product_interest
 
 logger = logging.getLogger(__name__)
 
@@ -128,10 +128,12 @@ async def query_product_info(query: str, tool_context: ToolContext) -> dict:
 
     Name the product and the topic in the query (e.g. "harga bulanan ChillMaster 592L").
     The search covers only the document of the product named in the query, or of the
-    active product when none is named. If the customer moves to another product, call
-    set_product_interest first. If the results do not state the answer, send the
-    missing-fact line and carry on: that is not a handoff. Never use figures from another
-    product's document, and never infer facts that are absent from the results.
+    active product when none is named. With no active product, a query that names one
+    product also selects it (as set_product_interest would). If the customer moves to
+    another product, call set_product_interest first. If the results do not state the
+    answer, send the missing-fact line and carry on: that is not a handoff. Never use
+    figures from another product's document, and never infer facts that are absent from
+    the results.
     Do NOT call this tool for location coverage (advance_purchase_stage checks it).
     """
     cleaned_query = (query or "").strip()
@@ -144,6 +146,15 @@ async def query_product_info(query: str, tool_context: ToolContext) -> dict:
     # this call and set_product_interest in one response).
     products = find_product_keys(cleaned_query)
     active_product = tool_context.state.get("product_interest")
+    # Before any pick, a question about one product is the pick (the discovery rule). The
+    # model sometimes searched without calling set_product_interest (E1): no USP, no
+    # location step.
+    pick = {}
+    if not active_product and len(products) == 1:
+        picked = set_product_interest(products[0], tool_context)
+        pick = {"product_selected": picked["product_interest"]}
+        if picked.get("reply_rule"):
+            pick["reply_rule"] = picked["reply_rule"]
     if not products and active_product:
         products = [active_product]
 
@@ -152,19 +163,19 @@ async def query_product_info(query: str, tool_context: ToolContext) -> dict:
     cache_key = f"rag_{cache_generation}_{'+'.join(products) or 'all'}_{query_hash}"
     cached_result = tool_context.state.get(cache_key)
     if cached_result is not None:
-        return cached_result
+        return {**cached_result, **pick}
 
     try:
         result = await _search(cleaned_query, products)
     except Exception:  # noqa: BLE001
         logger.exception("KHIND RAG query failed")
         # Not cached, so the next question tries again.
-        return {"status": "error", "results": [], "rag_error": True}
+        return {"status": "error", "results": [], "rag_error": True, **pick}
 
     # A whole-corpus fallback is not stored under a product key.
     if result["scope"] == "product" or not products:
         tool_context.state[cache_key] = result
-    return result
+    return {**result, **pick}
 
 ## Suggestion for caching rag via rag engine semantic 
 

@@ -32,7 +32,8 @@ Strictly linear, one step at a time:
    the fixed `APPLICATION_COMPLETE_LINE`, which asks for the IC photos.
 
 At any step, a product question gets a 1-2 sentence `query_product_info` answer, then the pending
-step's question again. A fact missing from the documents gets the fixed `KB_GAP_LINE` ("Pegawai kami
+step's question again. Before any pick, a question about one product is the pick: if the model
+only searches, `query_product_info` picks the product in code. A fact missing from the documents gets the fixed `KB_GAP_LINE` ("Pegawai kami
 akan sahkan …"), not a handoff; `rag-error` is only for a failed retrieval. Naming another product,
 including one picked earlier, calls `set_product_interest` (USP and media once) and keeps the current
 stage. There is no Q&A stage and no payslip question any more.
@@ -57,7 +58,9 @@ stage. There is no Q&A stage and no payslip question any more.
 - `apps/tools/rag_tool.py`: searches only the corpus file of the product named in the query, else
   of the active product (`top_k=8`, the whole document); with no product, the whole corpus
   (`top_k=3`). `PRODUCT_DOCUMENTS` maps keys to file names; the newest duplicate wins. Only `ok`
-  results are cached.
+  results are cached. With no active product, a query that names one product also picks it
+  (`set_product_interest`) and the response has `product_selected`: in scripted runs the model
+  sometimes searched without picking (E1, 3 of 10 runs after the rerun-2 prompt changes).
 - `apps/prompts/khind_assembler.py`: no product gives the discovery fragment;
   `qualification`/`form` gives closing; anything else gives coverage. The Current State block has
   a `Pending step` line built from state (escalated, product, stage, form sent, form complete).
@@ -66,6 +69,11 @@ stage. There is no Q&A stage and no payslip question any more.
   fixed questions and lines (`LOCATION_QUESTION`, `KB_GAP_LINE`, `APPLICATION_COMPLETE_LINE` …).
   All fixed customer-facing text lives here.
 - `apps/services/replies.py`
+  - `strip_personal_values` (after-model callback, first): removes the customer's name (full, and
+    each capitalised name word), IC, phone numbers, email and address, as saved in
+    `application_details` or passed to `save_application_details` in the same response. The
+    model thanked customers by name in the form step in every scripted run before it. It edits the
+    response in place and returns `None`, so the other callbacks still run.
   - `drop_text_beside_coverage_or_handoff_call` (after-model callback): removes text written in
     the same response as an `advance_purchase_stage` call (before the verdict exists) or an
     `escalate_to_live_agent` call (where the model once wrote its English reasoning, B6).
@@ -80,10 +88,11 @@ stage. There is no Q&A stage and no payslip question any more.
   - `build_reply` (used by `run_turn`): keeps text written alongside other tool calls (never beside
     a coverage or handoff call), skips exact repeats, and falls back to the label's fixed line. It
     reads the handoff from the tool results, so the coverage tool's handoff counts.
-- `apps/agent.py`: registers the three callbacks, in that order; `max_output_tokens=2048`,
+- `apps/agent.py`: registers the four callbacks, in that order; `max_output_tokens=2048`,
   `thinking_budget=1024`.
 - `apps/webhook.py`: media first (waits at most 20 s), then text, then `set_conversation_pending`.
-  An upload that finishes late sets pending again, unless the turn escalated.
+  An upload that finishes late sets pending again. A turn that escalated gets no media, as it gets
+  no USP.
 - `apps/tools/escalation_tool.py`: labels are `coverage-unsupported-alternative`, `not-working`,
   `human-required`, `angry-customer`, `rag-error`. `no-payslip-alternative` is gone. `hand_off` is
   shared by `escalate_to_live_agent` and `advance_purchase_stage`: it makes the Chatwoot call, sets
@@ -114,6 +123,7 @@ stage. There is no Q&A stage and no payslip question any more.
   asia-southeast1 corpus, so `rag_tool` calls `vertexai.init` with the corpus's own region first.
 - ADK's `State` is not a Mapping: `dict(state)` raises `KeyError: 0`. Use `state.to_dict()`.
 - `after_model_callback` takes a list; ADK stops at the first callback that returns a response.
+  A callback that must not stop the rest edits `llm_response` in place and returns `None`.
 - Local run from the repo root: `adk api_server --port 8000 --session_service_uri memory:// .` (or
   `adk web .`). The app name is `apps`. The server caches the agent, so restart it after edits.
   It shows the real reply text but not media. Without `memory://`, sessions go into
@@ -126,8 +136,9 @@ stage. There is no Q&A stage and no payslip question any more.
 
 - Smoke test v2 (2026-09-24, Astra in ADK Web): 53 of 62 on `cc153b1`, then 58 of 62 on
   `de4f6c9` (rerun 2).
-  - Rerun 2's 4 failures (B6, B12, D6, E4) are fixed in the next commit. Offline checks and
-    scripted real-Gemini chats pass (`handoff/verification/rerun2_fix_run_2026-09-24.txt`).
+  - Rerun 2's 4 failures (B6, B12, D6, E4) are fixed in `e1a3458`. The next commit adds the PDPA
+    guard, no media on a handoff turn, and the pick by search (E1). Offline checks and scripted
+    real-Gemini chats pass (`handoff/verification/rerun2_fix_run_2026-09-24.txt`).
   - The tool contract changed, so the next Astra run covers all 62 rows. Status and next steps:
     `handoff/2026-09-24-khind-sales-flow.md`.
 
@@ -143,12 +154,10 @@ stage. There is no Q&A stage and no payslip question any more.
   - The DryMaster document holds two conflicting price tables (RM85/month for 48 months, against
     RM105 for 48 and RM135 for 36). KHIND must confirm which is current.
   - The aircond document has no monthly price, so the agent sends the missing-fact line.
-- In the form step the model thanks the customer by name ("Terima kasih, Ali bin Abu!"), despite
-  the rule against echoing details: in 2 of 2 scripted runs after the rerun-2 fixes, and in the
-  2 earlier runs. It also lists the missing fields in the form layout. This is a PDPA risk (A8 is
-  a Critical row).
-- On a first pick with an uncovered area (B12), the webhook still sends the product's 2 images and
-  1 video, because media delivery does not check `escalated`.
+- In the form step the model lists the missing fields in the form layout, although the rule says
+  not to resend the form. (Its name echo is now removed by `strip_personal_values`.)
+- Route A of the webhook (a WhatsApp list pick) sets the conversation to pending after its text
+  even when the chat was handed over; Route B does not.
 - The `not-working` label must be created in Chatwoot so these handoffs show in filters.
 - `escalated` never resets.
 - The IC-photo step never ends: `webhook.py` drops messages that hold only images.
@@ -176,3 +185,8 @@ stage. There is no Q&A stage and no payslip question any more.
   - the kerja and IC-photo questions carry an emoji, and every reply needs one.
 
   The audit note is in the Obsidian folder `2026-09-24 - KHIND Linear Flow Smoke Test - Rerun 2`.
+- 2026-09-24 (after the rerun-2 fixes, user decisions):
+  - code removes personal values from replies;
+  - a turn that escalated gets no media;
+  - `query_product_info` picks the product before any pick. After the rerun-2 prompt changes the
+    model skipped that pick in E1 in 3 of 10 scripted runs (0 of 8 on the old code).

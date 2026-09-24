@@ -63,8 +63,11 @@ async def main():
     assert r == ["media_start", "media_done", "text", "pending", "escalate_check"], r
     print("PASS route B order:", r)
     r, _ = await run(ROUTE_B, state={"product_interest": "aircond_kool_series", "escalated": True})
-    assert "pending" not in r and r.index("media_done") < r.index("text"), r
-    print("PASS route B escalated, no pending:", r)
+    assert r == ["text", "escalate_check"], r
+    print("PASS route B handoff turn: no media, no pending:", r)
+    r, _ = await run(ROUTE_A, state={"product_interest": "aircond_kool_series", "escalated": True})
+    assert "media_start" not in r and "text" in r, r
+    print("PASS route A handoff turn: no media:", r)
     r, _ = await run(ROUTE_B, state={})
     assert r == ["text", "pending", "escalate_check"], r
     print("PASS route B no product, no media:", r)
@@ -74,9 +77,6 @@ async def main():
     assert r == ["media_start", "text", "pending", "escalate_check"], r
     assert final[-2:] == ["media_done", "pending"], final
     print(f"PASS slow media: text at the bound, late upload then re-pends: {final} ({waited:.1f}s total)")
-    r, final = await run(ROUTE_B, delay=1.0, bound=0.3, state={"product_interest": "aircond_kool_series", "escalated": True})
-    assert "pending" not in final and final[-1] == "media_done", final
-    print(f"PASS slow media after handoff: no re-pend: {final}")
     r, final = await run(ROUTE_A, delay=1.0, bound=0.3)
     assert r == ["media_start", "text", "pending"] and final[-2:] == ["media_done", "pending"], final
     print(f"PASS route A slow media re-pends: {final}")

@@ -200,6 +200,7 @@ def kb_gap():
     check("E1: no handoff", not st.get("escalated") and "escalate_to_live_agent" not in t)
     check("E1: gap line (the aircond document has no monthly price)", GAP in r)
     check("E1: aircond picked, location question", st.get("product_interest") == "aircond_kool_series" and LOCQ in r)
+    check("E1: exact aircond USP once", r.count(USP["aircond_kool_series"]) == 1 and ticks(r) == ticks(USP["aircond_kool_series"]))
 
 def switch_back():
     print("\n===== G6: back to an earlier product, with a question =====")

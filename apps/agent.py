@@ -9,6 +9,7 @@ from apps.services.replies import (
 	drop_text_beside_coverage_or_handoff_call,
 	fill_empty_handoff_reply,
 	insert_pending_usp,
+	strip_personal_values,
 )
 from apps.tools.escalation_tool import escalate_to_live_agent
 from apps.tools.rag_tool import query_product_info
@@ -33,12 +34,14 @@ root_agent = LlmAgent(
 		mark_application_form_sent,
 		save_application_details,
 	],
-	# In order: drop text written beside a coverage or handoff call; put the approved USP,
-	# word for word, above the reply after a first product pick; give a handoff turn with no
-	# reply text its label's fixed line. ADK stops at the first callback that returns a
-	# response; the first one only acts on tool-call responses, which the other two ignore,
-	# and the second one leaves handoff turns alone.
+	# In order: remove the customer's personal values from the text (edits in place and
+	# returns None, so the rest still run); drop text written beside a coverage or handoff
+	# call; put the approved USP, word for word, above the reply after a first product pick;
+	# give a handoff turn with no reply text its label's fixed line. ADK stops at the first
+	# callback that returns a response; drop_text... only acts on tool-call responses, which
+	# the last two ignore, and insert_pending_usp leaves handoff turns alone.
 	after_model_callback=[
+		strip_personal_values,
 		drop_text_beside_coverage_or_handoff_call,
 		insert_pending_usp,
 		fill_empty_handoff_reply,

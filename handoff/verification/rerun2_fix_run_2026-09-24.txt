@@ -1,11 +1,21 @@
-# Verification of the rerun-2 fixes (B6, B12, D6, E4), 2026-09-24
-# unit_checks.py: ALL 138 CHECKS PASSED
-# webhook_order.py: ALL WEBHOOK ORDER CHECKS PASSED (7)
-# scenarios.py (real Gemini, adk api_server on port 8001): run 1: ==== 62/62 checks passed ====; run 2: ==== 62/63 checks passed ====
-# Run 2's only failure is the PDPA check added after run 1 (open issue, not caused by this change): the happy
-# path's form step thanked the customer by name in both runs (run 1 "Terima kasih, Ali!", run 2 "Terima kasih,
-# Ali bin Abu!"), as in full_run_2026-09-24.txt and fix_run_2026-09-24.txt.
-# Full transcript of run 2 below.
+# Verification of the rerun-2 fixes, 2026-09-24 (scenarios: real Gemini, adk api_server on port 8001)
+#
+# Round 1, commit e1a3458 (B6, B12, D6, E4):
+#   unit_checks.py 138/138; webhook_order.py 7/7; scenarios.py run 1 62/62, run 2 62/63.
+#   Run 2's miss was a PDPA check added after run 1: the form step thanked the customer by name in
+#   both runs ("Terima kasih, Ali!", "Terima kasih, Ali bin Abu!"), as in full_run_2026-09-24.txt and
+#   fix_run_2026-09-24.txt.
+#
+# Round 2, the next commit (PDPA guard, no media on a handoff turn, pick by search at discovery):
+#   unit_checks.py 158/158; webhook_order.py 7/7.
+#   With the PDPA guard only: run 3 51/53 (a Google OAuth connect timeout crashed the happy path;
+#   E1 missed the pick), run 4 62/63 (E1 missed the pick; the form step no longer echoed the name).
+#   E1 alone: 5/6 on that code, 8/8 on the old code (de4f6c9, ADK Web on port 8000). The model
+#   sometimes called query_product_info without set_product_interest, so no USP and no location
+#   question. With the pick in query_product_info: E1 alone 8/8 (once the model skipped
+#   set_product_interest and the code picked the product), run 5 64/64, run 6 64/64.
+#
+# Full transcript of run 6 below.
 
 apps: ['apps', 'docs', 'graphify-out', 'handoff']
 
@@ -13,9 +23,10 @@ apps: ['apps', 'docs', 'graphify-out', 'handoff']
 
 >>> hi
 [tools: []] [stage: None] [product: None] [escalated: None/None]
-Hai! 👋 Saya Penasihat Jualan KHIND di WhatsApp. Selamat datang! Kami ada skim sewa beli mampu milik untuk bantu cik/tuan miliki perkakas rumah idaman.
+Hai! 👋 Selamat datang ke KHIND Malaysia. Saya penasihat jualan anda untuk skim sewa beli mampu milik kami.
 
-Ini adalah senarai produk kami:
+Kami ada pelbagai pilihan perkakas rumah untuk anda:
+
 ❄️ *Peti Sejuk*
 1️⃣ ChillMaster 592L (Side-by-Side)
 2️⃣ ChillMaster Lite 480L (2 Pintu)
@@ -58,7 +69,7 @@ PASS kerja: RM1 line, no escalation
 
 >>> ok
 [tools: ['mark_application_form_sent']] [stage: qualification] [product: aircond_kool_series] [escalated: None/None]
-Terima kasih! Sila lengkapkan borang permohonan di bawah ya:
+Terima kasih! Sila lengkapkan borang permohonan di bawah ya. 😊
 
 BORANG PERMOHONAN KHIND
 =========================
@@ -86,24 +97,26 @@ DOKUMEN DIPERLUKAN
 =========================
 Gambar IC depan belakang
 
-Boleh cik/tuan isikan butiran ini? 😊
+Boleh cik/tuan isikan butiran ini?
 PASS ok: BORANG sent once
 
 >>> Nama saya Ali bin Abu, IC 000000-00-0000, email ali@example.com
 [tools: ['save_application_details']] [stage: qualification] [product: aircond_kool_series] [escalated: None/None]
-Terima kasih, Ali bin Abu! 😊
+Terima kasih! 👍
 
-Untuk meneruskan permohonan, boleh berikan:
-1. No Whatsapp :
-2. Alamat Pemasangan :
-3. Pekerjaan :
-4. Nama Syarikat :
-5. Tarikh bermula :
-6. Butiran Kecemasan (Nama, No. HP, Hubungan) :
+Seterusnya, boleh cik/tuan berikan:
+* No Whatsapp
+* Alamat Pemasangan
+* Pekerjaan
+* Nama Syarikat
+* Tarikh bermula
+* Butiran Kecemasan (Nama, No. HP, Hubungan)
+
+😊
 PASS fields: saved, no full form resent
 PASS fields: asks for a missing field
 PASS E4: the missing-field reply has an emoji
-FAIL PDPA: no personal value echoed (open issue: name echo in the form step)
+PASS PDPA: no personal value echoed (open issue: name echo in the form step)
 
 ===== Not covered =====
 
@@ -189,9 +202,10 @@ Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantara
 
 >>> berapa harga?
 [tools: ['query_product_info']] [stage: location] [product: washer_dryer_11_7] [escalated: None/None]
-Harga untuk 2-in-1 Washer Dryer 11KG/7KG ini ada dua pilihan:
-1. Pembelian terus (Outright): RM3,500 (sekali bayar)
-2. Skim Sewa Beli (RTO): RM125/bulan untuk 36 bulan, dengan promosi terhad RM99/bulan untuk 6 bulan pertama. ✨
+Harga untuk *2-in-1 Washer Dryer 11KG/7KG* ini ada dua pilihan ya:
+
+*   Pembelian tunai: RM3,500
+*   Sewa Beli (RTO): RM125 sebulan untuk 36 bulan, atau promosi terhad RM99 sebulan untuk 6 bulan pertama, kemudian RM125 sebulan untuk baki 30 bulan.
 
 Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
 PASS price q: answered, location question repeated, stage unchanged
@@ -247,10 +261,10 @@ PASS A2: USP then the location question, no model comment
 
 >>> Berapa harga ansuran bulanan untuk model ni?
 [tools: ['query_product_info']] [stage: location] [product: chillmaster_592l] [escalated: None/None]
-Untuk ChillMaster 592L, ada dua pilihan ansuran bulanan:
-*Smart Value* pada RM119/bulan (60 bulan) atau *Super Saver* pada RM99/bulan (60 bulan). 😊
+Untuk model ChillMaster 592L, kami ada dua pilihan ansuran bulanan:
+*Smart Value* pada RM119/bulan (60 bulan) atau *Super Saver* pada RM99/bulan (60 bulan) ✨.
 
-Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma?
+Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
 PASS A3: no Lite 480L prices (RM75/RM95)
 PASS A3: 592L prices from its own document (RM99/RM119)
 PASS A3: location question again, stage location, no handoff
@@ -269,7 +283,7 @@ Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantara
 
 >>> Poskod 96800
 [tools: ['advance_purchase_stage']] [stage: location] [product: chillmaster_592l] [escalated: None/None]
-Terima kasih! 🙏 Untuk semakan yang lebih tepat, boleh kongsikan nama bandar atau kawasan pemasangan cik/tuan di Sarawak? 😊
+Terima kasih! 😊 Boleh kongsikan nama bandar atau kawasan pemasangan cik/tuan di Sarawak?
 PASS B10: no verdict, asks for the town, stage location
 
 >>> Kapit
@@ -287,7 +301,7 @@ PASS B10: then 'Kapit' -> not-covered handoff
 ✅ Penyejukan pantas & berkuasa - tersedia dalam 1.0HP, 1.5HP dan 2.0HP, sehingga 19,000 BTU/j.
 ✅ Dilengkapi Ultra PCB Protection + Blue Fin anti-hakisan, termasuk pemasangan dan servis profesional oleh juruteknik Acson.
 
-Baik, kawasan *Kajang, Selangor* ada dalam liputan penghantaran & pemasangan kami! 🚚✨ Boleh saya tahu cik/tuan bekerja sekarang? 😊
+Baik, kawasan Kajang, Selangor ada dalam liputan penghantaran & pemasangan kami! 🚚✨ Boleh saya tahu cik/tuan bekerja sekarang? 😊
 PASS B11: exact aircond USP once
 PASS B11: covered line + kerja question, no location question
 PASS B11: stage qualification, not escalated
@@ -324,7 +338,7 @@ PASS 7: USP then the location question, no model comment
 
 >>> Ada produk apa lagi?
 [tools: []] [stage: location] [product: drymaster_9kg] [escalated: None/None]
-Tentu, ini senarai produk KHIND yang kami ada untuk skim sewa beli:
+Tentu, ini senarai produk KHIND yang kami ada:
 
 ❄️ *Peti Sejuk*
 1️⃣ ChillMaster 592L (Side-by-Side)
@@ -346,14 +360,14 @@ PASS D4: location question (pending step), stage unchanged
 
 >>> Waranti berapa tahun untuk produk ni?
 [tools: ['query_product_info']] [stage: location] [product: drymaster_9kg] [escalated: None/None]
-Untuk DryMaster 9KG, waranti am adalah 2 tahun, manakala waranti motor pula 10 tahun. ✨
+Maaf, maklumat tempoh waranti yang tepat untuk DryMaster 9KG belum ada dalam sistem saya. Pegawai kami akan sahkan dengan cik/tuan nanti ya 🙏
 
 Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
 PASS D5: location question again, not 'which product'
 
 >>> KHIND ada jual TV atau microwave tak?
 [tools: []] [stage: location] [product: drymaster_9kg] [escalated: None/None]
-Maaf cik/tuan, skim sewa beli kami hanya untuk peti sejuk, mesin basuh & pengering, dan penyaman udara KHIND sahaja buat masa ini. 🙏
+Untuk skim sewa beli ini, kami hanya menawarkan peti sejuk, mesin basuh & pengering, dan penyaman udara KHIND sahaja buat masa ini 😊.
 
 Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantaran percuma? 😊
 PASS D6: no brand-wide claim, 'senarai' only with the list shown
@@ -376,6 +390,7 @@ Boleh kongsikan Poskod & Kawasan pemasangan untuk saya semak liputan penghantara
 PASS E1: no handoff
 PASS E1: gap line (the aircond document has no monthly price)
 PASS E1: aircond picked, location question
+PASS E1: exact aircond USP once
 
 ===== G6: back to an earlier product, with a question =====
 
@@ -408,7 +423,9 @@ Boleh saya tahu cik/tuan bekerja sekarang? 😊
 
 >>> Ok balik pada peti ais 592L tadi, berapa berat dia?
 [tools: ['set_product_interest', 'query_product_info']] [stage: qualification] [product: chillmaster_592l] [escalated: None/None]
-Berat bersih peti sejuk ChillMaster 592L adalah 85kg, manakala berat kasar (termasuk pembungkusan) adalah 95kg. 📦
+*KHIND ChillMaster 592L* ✨
+
+Berat bersih peti sejuk ChillMaster 592L ialah **85kg**, manakala berat kasar (termasuk pembungkusan) ialah **95kg** 😊.
 
 Boleh saya tahu cik/tuan bekerja sekarang? 😊
 PASS G6: active product back to 592L
@@ -437,7 +454,7 @@ Terbaik! 👍 *Pendaftaran hanya RM1*, tiada bayaran lain sekarang. Jom semak ke
 
 >>> Ok jom semak
 [tools: ['mark_application_form_sent']] [stage: qualification] [product: chillmaster_592l] [escalated: None/None]
-Baik, ini borang permohonan untuk ChillMaster 592L. Sila isikan butiran yang diperlukan ya. 😊
+Baik, ini borang permohonan untuk cik/tuan isi ya! ✨
 
 BORANG PERMOHONAN KHIND
 =========================
@@ -465,6 +482,8 @@ DOKUMEN DIPERLUKAN
 =========================
 Gambar IC depan belakang
 
+Boleh cik/tuan isikan butiran ini? 😊
+
 >>> Nama Ali bin Abu, No IC 900101015511, WhatsApp 0123456789, emel ali@example.com, alamat No 5 Jalan Bunga Kajang, teknisi di ABC Sdn Bhd mula Jan 2020. Kecemasan: Siti binti Ahmad, 0198887777, isteri
 [tools: ['save_application_details']] [stage: qualification] [product: chillmaster_592l] [escalated: None/None]
 Terima kasih, butiran permohonan cik/tuan sudah lengkap! 👍 Boleh hantar *gambar IC depan & belakang* sekarang? 📸
@@ -473,13 +492,15 @@ PASS A10: no personal value echoed
 
 >>> Boleh hantar borang sekali lagi?
 [tools: []] [stage: qualification] [product: chillmaster_592l] [escalated: None/None]
-Maaf, butiran permohonan cik/tuan sudah lengkap. 😊 Boleh hantar *gambar IC depan & belakang* sekarang? 📸
+Maaf, borang permohonan cik/tuan sudah lengkap. 😊 Sekarang, boleh hantar *gambar IC depan & belakang* ya? 📸
 PASS A11: no second form, ends with a question
 PASS E4 (A11): has an emoji, IC-photo question
 
 >>> Boleh baca semula no IC dan nama penuh saya tadi?
 [tools: []] [stage: qualification] [product: chillmaster_592l] [escalated: None/None]
-Maaf, saya tidak boleh ulang maklumat peribadi cik/tuan atas sebab keselamatan. 🙏 Boleh hantar *gambar IC depan & belakang* sekarang? 📸
+Maaf, saya tidak boleh mengulang semula butiran peribadi yang telah cik/tuan berikan. 🙏
+
+Boleh hantar *gambar IC depan & belakang* sekarang? 📸
 PASS F6: no personal value echoed
 PASS E4 (F6): has an emoji, ends with a question
 
@@ -512,5 +533,4 @@ PASS B12: product set and handed over with the coverage label
 PASS B12: no USP on the handoff turn
 PASS B12: one not-covered line with Kapit, no sales question
 
-==== 62/63 checks passed ====
-FAILED: PDPA: no personal value echoed (open issue: name echo in the form step)
+==== 64/64 checks passed ====

@@ -13,7 +13,9 @@ Updated after rerun 2 (2026-09-24, 58/62 on commit de4f6c9): advance_purchase_st
 uncovered area to an officer itself (the model no longer calls escalate_to_live_agent for it);
 code removes text written beside a coverage or handoff call; the out-of-range rule names the 3
 product categories; the kerja and IC-photo questions carry an emoji, and E4 needs an emoji in
-every reply but bold only for key terms.
+every reply but bold only for key terms. Later the same day: with no active product,
+query_product_info picks the one product its query names (E1, C2); code removes the customer's
+personal values from replies (A8).
 
 Fixed texts (USP blocks, handoff lines, BORANG) are read from apps/prompts/khind_prompts.py so
 the sheet cannot drift from the code. Run from the repo root:
@@ -115,6 +117,9 @@ RF = "F - Escalation, qualification & guardrails"
 RG = "G - Session & robustness"
 
 W1 = "Warm-up W1: send '1' (log it in J)"
+# Before any pick, a search that names one product is the pick (code, since 2026-09-24).
+PICK_BY_SEARCH = ("query_product_info alone: with no active product it selects the product its query names "
+                  "(its response shows product_selected 'aircond_kool_series')")
 W2 = "Warm-up W2: send '1', then 'Poskod 43000, Kajang Selangor' (log both in J)"
 NO_RAG = "query_product_info must NOT be called."
 
@@ -300,8 +305,9 @@ ROWS = [
      "Fail"),
     ("C2", RC, "New session", "Ada aircond tak?",
      "Mentioning a product counts as a pick: the aircond USP verbatim + the location question.",
-     "set_product_interest('aircond_kool_series')",
-     "Selection tool fired with the aircond key; USP verbatim.",
+     f"set_product_interest('aircond_kool_series'), or {PICK_BY_SEARCH}",
+     "Aircond selected (set_product_interest, or product_selected in the query_product_info response); USP "
+     "verbatim.",
      "Fail"),
     ("C3", RC, "New session", "WD1468",
      f"{usp_expect('washer_dryer_11_7', 'the 2-in-1 Washer Dryer 11KG/7KG', cap=True)}, then the location question.",
@@ -386,7 +392,7 @@ ROWS = [
      "Replies 100% in BM. Picks the aircond (USP verbatim once). The aircond document "
      "(khind_acson_knowledge_base.md) holds no monthly price (only installation charges), so the "
      f"missing-fact line (\"{GAP}\", topic filled in), then the location question. No handoff.",
-     "set_product_interest('aircond_kool_series'); query_product_info -> scope 'product', products "
+     f"set_product_interest('aircond_kool_series') (or {PICK_BY_SEARCH}); query_product_info -> scope 'product', products "
      "['aircond_kool_series']. escalate_to_live_agent must NOT be called.",
      "BM only; no RM figure from another product; not escalated; location question asked.",
      "Pass"),
@@ -665,6 +671,9 @@ line("", "Text beside a coverage or handoff call", "Code removes any text the mo
      "an advance_purchase_stage or escalate_to_live_agent Function Call, in ADK Web and in production. The handoff "
      "line comes after the tool. Visible text in such an event is a Fail (Major).")
 line("", "Lead-in before BORANG", "One short sentence before the form is allowed.")
+line("", "Pick by search", "With no active product, a query_product_info call that names one product selects it "
+     "(product_selected in its response). No separate set_product_interest call is needed; the USP and the "
+     "location question follow as for any pick.")
 line("", "Coverage statuses", "advance_purchase_stage returns status 'error' when no product is set, and "
      "'need_town' / 'need_state' / 'need_location' when the place is not clear yet (the agent then asks the "
      "question in 'ask'). After the location step, a call with no place is a no-op. Designed behaviour.")
@@ -745,7 +754,8 @@ line("", "Cross-product figures (A3, G6)", "Failed on the first 2026-09-24 run: 
 line("", "DryMaster prices (D2, C8)", "The DryMaster document holds two conflicting price tables (RM85/month "
      "x 48, or RM105 x 48 and RM135 x 36). Either traces to the DryMaster document: not a Fail, but note it.")
 line("", "PDPA name echo (A8)", "The model thanked customers by name on 2026-09-20 and 2026-09-24, and in "
-     "scripted form-step runs after rerun 2. Read the reply word by word.")
+     "scripted form-step runs after rerun 2. Code now removes the customer's personal values from every reply. "
+     "Still read the reply word by word.")
 line("", "Duplicate blank form (A11)", "The full blank form was resent after completion on 2026-09-20.")
 line("", "Duplicate USP on a switch (G5, G7)", "The model sometimes writes its own product description; code "
      "strips it. Count the ✅ lines against this sheet.")

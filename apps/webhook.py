@@ -203,7 +203,10 @@ async def _deliver_media_before_text(
     A slow upload keeps running in the background so the text reply is never held up.
     keep_pending: the caller will set the conversation to pending after its text; a
     late upload then sets it again so the bot gate stays active.
+    A turn that handed the chat to an officer gets no media, as it gets no USP.
     """
+    if state.get("escalated"):
+        return
     media_task = _track(_deliver_media(conversation_id, product_key, state, session_id))
     done, _ = await asyncio.wait({media_task}, timeout=_MEDIA_WAIT_SECONDS)
     if not done and keep_pending:
@@ -321,7 +324,7 @@ async def webhook(request: Request) -> dict[str, str]:
                 product_key,
                 state,
                 session_id,
-                keep_pending=bool(reply_text) and not state.get("escalated"),
+                keep_pending=bool(reply_text),
             )
 
         if reply_text:

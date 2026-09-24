@@ -75,7 +75,10 @@ uv run --no-project --with openpyxl python handoff/smoke-test/build_smoke_test_v
   (Function Response: scope `product`). Quoting RM75/RM95 or 80kg/87kg for the 592L is still a
   Critical fail. The Reference sheet maps every product to its source document.
 - **PDPA (A8).** A name echo such as "Terima kasih Ali bin Abu" was seen on 2026-09-20 and again
-  on 2026-09-24, also in scripted form-step runs after rerun 2.
+  on 2026-09-24, also in scripted form-step runs after rerun 2. Code now removes the customer's
+  personal values from every reply; still read A8 word by word.
+- **Pick by search (E1, C2).** Before any pick, `query_product_info` alone picks the one product
+  its query names (`product_selected` in its response). That counts as the pick.
 - **Duplicate blank form (A11).** It happened on 2026-09-20.
 - **USP exactly once (A2, B1, C1-C7, G5, G7).** Count the ✅ lines against the Reference sheet. An
   extra block means the model wrote its own description and the code guard missed it.

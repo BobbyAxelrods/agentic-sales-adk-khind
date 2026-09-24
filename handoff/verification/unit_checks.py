@@ -27,6 +27,7 @@ from apps.prompts.khind_prompts import (
 from apps.services.coverage import check_coverage
 from apps.services.replies import (
     build_reply, drop_text_beside_coverage_or_handoff_call, fill_empty_handoff_reply, insert_pending_usp,
+    strip_personal_values,
 )
 from apps.tools.escalation_tool import ESCALATION_LABELS
 from apps.tools.session_tools import advance_purchase_stage, find_product_keys, set_product_interest
@@ -285,6 +286,37 @@ check(fill_empty_handoff_reply(SimpleNamespace(invocation_id="inv-2", state=dict
       "a handoff from an earlier turn does not fill a later empty reply")
 check(fill_empty_handoff_reply(SimpleNamespace(invocation_id=INV, state=dict(done)), handoff) is None, "tool-call response untouched")
 
+# --- PDPA: personal values the customer gave are removed from the reply ---
+DETAILS = {"application_details": {"full_name": "Ali bin Abu", "ic_number": "900101015511", "whatsapp_number": "0123456789",
+                                   "email": "ali@example.com", "installation_address": "No 5 Jalan Bunga, Kajang",
+                                   "occupation": "teknisi", "emergency_contact_name": "Siti binti Ahmad"}}
+def stripped(text, state=DETAILS, extra_parts=()):
+    resp = LlmResponse(content=T.Content(role="model", parts=[T.Part(text=text), *extra_parts]))
+    returned = strip_personal_values(SimpleNamespace(invocation_id=INV, state=dict(state)), resp)
+    return returned, resp.content.parts[0].text
+for label, reply, want in (
+    ("run 1 echo", "Terima kasih, Ali! 👍\n\nSeterusnya, boleh berikan *No Whatsapp*?", "Terima kasih! 👍\n\nSeterusnya, boleh berikan *No Whatsapp*?"),
+    ("run 2 echo", "Terima kasih, Ali bin Abu! 😊", "Terima kasih! 😊"),
+    ("no comma", "Terima kasih Ali bin Abu! 👍", "Terima kasih! 👍"),
+    ("honorific", "Baik Encik Ali, butiran sudah disimpan. 😊", "Baik, butiran sudah disimpan. 😊"),
+    ("IC with dashes", "No IC 900101-01-5511 sudah disimpan. 😊", "No IC sudah disimpan. 😊"),
+    ("phone with spaces", "No Whatsapp 012-345 6789 diterima 👍", "No Whatsapp diterima 👍"),
+    ("email any case", "Emel ALI@example.com diterima 👍", "Emel diterima 👍"),
+    ("emergency contact", "Terima kasih, Siti sudah direkod 👍", "Terima kasih sudah direkod 👍"),
+    ("name first", "Ali, terima kasih! 👍", "Terima kasih! 👍"),
+    ("cik/tuan kept", "Terima kasih cik/tuan Ali bin Abu 😊", "Terima kasih cik/tuan 😊"),
+):
+    returned, out = stripped(reply)
+    check(returned is None and out == want, f"PDPA ({label}): {out!r}")
+returned, out = stripped("Terima kasih, Nur Kasih! 👍", {"application_details": {"full_name": "Nur Kasih binti Ahmad"}})
+check(out == "Terima kasih! 👍", "PDPA: a name word that is also a BM word ('kasih') is removed only where it is capitalised")
+save_call = T.Part(function_call=T.FunctionCall(name="save_application_details", args={"full_name": "Ali bin Abu"}))
+returned, out = stripped("Terima kasih, Ali.", {}, (save_call,))
+check(out == "Terima kasih.", "PDPA: text beside save_application_details is checked against the call's own values")
+for label, text in (("USP", KHIND_PRODUCT_USPS["chillmaster_592l"]), ("question", Q), ("form-complete line", APPLICATION_COMPLETE_LINE)):
+    check(stripped(text)[1] == text, f"PDPA: {label} untouched")
+check(stripped("Terima kasih, Ali!", {})[1] == "Terima kasih, Ali!", "PDPA: nothing saved -> nothing removed")
+
 # --- query_product_info: search limited to the named or active product ---
 calls, listing = [], []
 stamp = lambda hour: datetime(2026, 9, 12, hour, tzinfo=timezone.utc)
@@ -317,6 +349,21 @@ ctx_rag = SimpleNamespace(invocation_id=INV, state=state)
 asyncio.run(rag_tool.query_product_info("harga", ctx_rag))
 check(any(k.startswith("rag_0_chillmaster_592l_") for k in state), "cache key names the product scope")
 check(state.get("reply_facts_invocation") == INV, "query_product_info marks the turn")
+# E1: with no active product, a search that names one product picks it. The model sometimes
+# searched without calling set_product_interest (no USP, no location question).
+state = {}
+r = asyncio.run(rag_tool.query_product_info("harga bulanan KOOL Series Inverter Aircond", SimpleNamespace(invocation_id=INV, state=state)))
+check(state.get("product_interest") == "aircond_kool_series" and state.get("purchase_stage") == "location"
+      and state.get("pending_usp_products") == ["aircond_kool_series"] and r.get("product_selected") == "aircond_kool_series",
+      "E1: no active product + one product named -> picked (location step, USP queued)")
+check(not any("product_selected" in v for k, v in state.items() if k.startswith("rag_") and isinstance(v, dict)),
+      "the pick note is not cached")
+state = {"product_interest": "chillmaster_592l", "purchase_stage": "location", "pitched_products": ["chillmaster_592l"]}
+r = asyncio.run(rag_tool.query_product_info("harga ChillMaster Lite 480L", SimpleNamespace(invocation_id=INV, state=state)))
+check(state["product_interest"] == "chillmaster_592l" and "product_selected" not in r, "with an active product a search never switches it")
+state = {}
+r = asyncio.run(rag_tool.query_product_info("beza ChillMaster Lite 480L dan ChillMaster X 466L", SimpleNamespace(invocation_id=INV, state=state)))
+check("product_interest" not in state and "product_selected" not in r, "two products named at discovery -> no pick")
 def failing_retrieval(**kwargs):
     raise RuntimeError("vertex down")
 rag_tool.vrag = SimpleNamespace(list_files=fake_list_files, retrieval_query=failing_retrieval)
