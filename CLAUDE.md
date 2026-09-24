@@ -1,7 +1,8 @@
 # KHIND WhatsApp sales agent
 
 Google ADK 1.31 agent (`apps/agent.py`, Gemini 2.5 Flash on Vertex AI) behind a FastAPI
-Chatwoot webhook (`apps/main.py`, `apps/webhook.py`). There is no test suite yet. Check scripts
+Chatwoot webhook (`apps/main.py`, `apps/webhook.py`), built for Cloud Run (`Dockerfile`; not
+deployed yet). There is no test suite yet. Check scripts
 from the 2026-09-24 session live in `handoff/verification/`. The ADK Web smoke-test package for
 Astra computer use (62 cases, v2) lives in `handoff/smoke-test/`. The previous run (v1, 2026-09-20)
 is in `/mnt/d/Obsidian_folder/Personal/Personal/Khind Test/`.
@@ -91,9 +92,26 @@ no payslip question any more.
     reads the handoff from the tool results, so the coverage tool's handoff counts.
 - `apps/agent.py`: registers the four callbacks, in that order; `max_output_tokens=2048`,
   `thinking_budget=1024`.
-- `apps/webhook.py`: media first (waits at most 20 s), then text, then `set_conversation_pending`.
-  An upload that finishes late sets pending again. A turn that escalated gets no media, as it gets
-  no USP.
+- `apps/webhook.py` (called by the Chatwoot agent bot):
+  - checks `X-Chatwoot-Signature` (HMAC-SHA256 of `"<timestamp>.<body>"` with the bot's Webhook
+    Secret, `CHATWOOT_WEBHOOK_SECRET`) and refuses a timestamp more than 5 minutes off: 401.
+  - answers only `message_created`, `incoming`, not private, in a `pending` chat. Everything else
+    gets 200 `ignored`; a repeated message ID gets `duplicate`.
+  - returns 200 at once. The turn runs in the background, one at a time per chat, in order.
+  - per message: the turn, media (the text waits at most 20 s for it), then the text. A turn that
+    escalated gets no media, as it gets no USP. It sends no product menu of its own: the model's
+    greeting holds `PRODUCT_MENU`.
+  - a chat that is pending again after a handoff resumes the flow: `escalated` is cleared after a
+    live status check (user decision, 2026-09-24).
+  - photos after a complete application: a handoff (`human-required`) and
+    `IC_PHOTOS_RECEIVED_LINE`, with no model turn.
+- `apps/runner.py`: the Runner on the durable session store, awaited, with no cache: Agent Engine
+  sessions (`VERTEX_AI_AGENT_ENGINE_ID`, engine `khind-sales-sessions`), or memory when unset. The
+  session ID is `conv-<conversation id>`. State for a turn goes with the message
+  (`run_turn(state_delta=...)`); state outside a turn is an event with a state delta
+  (`patch_session_state`).
+- `apps/clients/chatwoot.py`: a handoff opens the chat, then adds its label to the existing ones,
+  posts the private note and assigns the officer. `get_conversation_status` reads the live status.
 - `apps/tools/escalation_tool.py`: labels are `coverage-unsupported-alternative`, `not-working`,
   `human-required`, `angry-customer`, `rag-error`. `no-payslip-alternative` is gone. `hand_off` is
   shared by `escalate_to_live_agent` and `advance_purchase_stage`: it makes the Chatwoot call, sets
@@ -125,6 +143,22 @@ no payslip question any more.
 - ADK's `State` is not a Mapping: `dict(state)` raises `KeyError: 0`. Use `state.to_dict()`.
 - `after_model_callback` takes a list; ADK stops at the first callback that returns a response.
   A callback that must not stop the rest edits `llm_response` in place and returns `None`.
+- Chatwoot (Cloud, v4.18.0) waits 5 s for the webhook response. A slower or failed response to a
+  message event opens the pending chat for officers. That is why the webhook returns 200 before
+  the turn runs.
+- The agent bot receives every message event of its inbox, also after a handoff: its own replies,
+  officers' replies, private notes and WhatsApp delivered/read updates (`message_updated`).
+- Messages sent with the agent bot's token never change the chat status. Never set the chat back to
+  pending after a reply: that takes the chat from an officer.
+- `POST .../labels` replaces all of a chat's labels. The bot token may call only messages,
+  `toggle_status`, conversation `show`, labels and assignments.
+- A WhatsApp list reply reaches the bot as plain text (the row title): Chatwoot drops the row ID.
+- Agent Engine session IDs allow only `[a-z0-9-]` and must start with a letter. `get_session`
+  loads every event; `GetSessionConfig(num_recent_events=0)` reads only the state.
+- The per-chat turn lock is in process memory, so run one Cloud Run instance (`--max-instances 1`).
+- To run the webhook app locally, use `handoff/verification/replay_local.py` (the app and a mock
+  Chatwoot). Do not start `uvicorn apps.main:app` with the `.env` Chatwoot values: they belong to
+  the live bot, so replies would reach real chats.
 - Local run from the repo root: `adk api_server --port 8000 --session_service_uri memory:// .` (or
   `adk web .`). The app name is `apps`. The server caches the agent, so restart it after edits.
   It shows the real reply text but not media. Without `memory://`, sessions go into
@@ -140,24 +174,24 @@ no payslip question any more.
   - Rerun 3 is the last test, by the user's decision: its findings are recorded here, not fixed.
     The audit against `session.db` confirmed all 62 passes (Obsidian folder
     `2026-09-24 - KHIND Linear Flow Smoke Test - Rerun 3`). It found:
-    - G5's first attempt failed with a Vertex AI 502. The model is a plain string with no
-      `retry_options`, so ADK does not retry. On WhatsApp the customer gets the runner's
-      technical-problem line and must write again.
+    - G5's first attempt failed with a Vertex AI 502, and ADK did not retry. Fixed on
+      `feat/cloud-run` (`9c5fd18`): 3 attempts on 408, 429 and 5xx.
     - D2 ("Ada promosi ke sekarang?") got the missing-fact line, although the DryMaster chunks of
       that turn list the RM1 processing fee and free delivery, installation, relocation, servicing
       and insurance. Rerun 2 quoted them.
     - C6 ("12", new session) said "senarai produk kami" without showing the list. The "senarai"
       rule in the prompt covers only items outside the 8 products.
 
-- The Chatwoot webhook fails on every message under ADK 1.31. `apps/runner.py` calls async session
-  methods without `await`, so the first `patch_session_state` raises. Even when awaited,
-  `get_session` returns a copy, `VertexAiSessionService` has no `update_session`, and
-  `VERTEX_AI_AGENT_ENGINE_ID` in `.env` is never read. After the fix, check that the catalog menu
-  and the model's own numbered list do not both reach the customer.
-- `POST /webhook` acts on any payload that holds text: it checks neither `event`, `message_type`
-  nor `private`, so the bot's own replies, officer replies and status events can be answered as
-  customer text. `CHATWOOT_WEBHOOK_SECRET` is in `.env` but never checked. Fix both before the
-  webhook gets a public URL. The Cloud Run plan is in `handoff/2026-09-24-khind-sales-flow.md`.
+- Cloud Run is not deployed yet. The plan and its state are in
+  `handoff/2026-09-24-khind-sales-flow.md`. Staging needs a test inbox with its own agent bot.
+- `IC_PHOTOS_RECEIVED_LINE` is new customer text: it needs the user's (or KHIND's) approval.
+- Sessions never expire. They hold names, IC and phone numbers, so KHIND must set a retention time
+  (Agent Engine sessions accept a TTL).
+- `query_product_info` caches its results in session state, so the stored state grows with each new
+  product question.
+- Voice notes, files and images before the form is complete get no reply.
+- `DISCOVERY_QUESTION` says "pilih dari menu di bawah", but no button menu is sent: the list is in
+  the same message, above the question.
 - RAG corpus data (retrieval itself is now limited to the product's document):
   - `khind_acson_knowledge_base.md` and `khind_dhp90_drymaster_heatpump_dryer_knowledge_base.md`
     were each uploaded twice. The older copies (2026-09-12 03:15Z and 03:32Z) differ from the newer
@@ -170,11 +204,7 @@ no payslip question any more.
 - In the form step the model lists the missing fields in the form layout, although the rule says
   not to resend the form. It did not happen in rerun 3. (Its name echo is now removed by
   `strip_personal_values`.)
-- Route A of the webhook (a WhatsApp list pick) sets the conversation to pending after its text
-  even when the chat was handed over; Route B does not.
 - The `not-working` label must be created in Chatwoot so these handoffs show in filters.
-- `escalated` never resets.
-- The IC-photo step never ends: `webhook.py` drops messages that hold only images.
 - A question with no product named and none active (for example "ada promosi?" at discovery)
   still searches the whole corpus.
 - `KHIND_MASTERPROMPT.md` and `TASK_TRACKER.md` still describe the old flow.
@@ -207,3 +237,9 @@ no payslip question any more.
 - 2026-09-24 (rerun 3, 62 of 62 on `04ec5c7`): the last test, by the user's decision. The audit
   confirmed every pass. Its findings are under "Open issues" and are not fixed. The rule checks it
   added are in `handoff/verification/check_run.py`.
+- 2026-09-24 (Cloud Run Phase 1 and the container, branch `feat/cloud-run`). User decisions: stay in
+  `prudential-poc-484904`; a new Agent Engine, `khind-sales-sessions`, for sessions; a separate test
+  inbox for staging; resume the flow when a chat comes back to the bot. The webhook path works:
+  signed calls, the event filter, background turns and durable sessions. The checks are
+  `session_checks.py`, `webhook_checks.py`, `session_online.py` and `replay_local.py` in
+  `handoff/verification/`. Nothing is deployed.
