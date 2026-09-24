@@ -1,140 +1,138 @@
-# Handoff: KHIND sales flow (2026-09-24). Next session: Astra rerun of the fixed flow, then audit
+# Handoff: KHIND sales flow. Next session: fix B6, B12, D6 and E4 from Astra's rerun (58/62)
 
-The first version of this handoff (the v2 run results and the fix hypotheses) is in commit `cc153b1`.
+Earlier versions of this file are in git history: `cc153b1` (the first v2 run) and `de4f6c9`
+(the fix round). Rules, enforcement points and pitfalls are in `CLAUDE.md`; this file does not
+repeat them.
 
-## Where things stand
+## Where things stand (2026-09-24, 08:55 MYT)
 
-- **The v2 smoke test** (Astra in ADK Web, 2026-09-24) passed 53 of 62 rows on commit `cc153b1`,
-  branch `feat/linear-sales-flow`.
-  - Claude audited all 83 turns from `apps/.adk/session.db`. The audit confirmed every failure
-    and overturned no pass.
-  - The audit record is `Claude Audit of Astra Verdicts.md` in the Obsidian folder
-    `/mnt/d/Obsidian_folder/Personal/Personal/Khind Test/2026-09-24 - KHIND Linear Flow Smoke Test/`.
-    That folder also holds Astra's bundle, a copy of the zip, and the v2 test inputs.
-- **The fixes for the 9 failing rows are committed** on the same branch, in the commit after
-  `cc153b1`. Verification (`handoff/verification/fix_run_2026-09-24.txt`):
+- **Branch** `feat/linear-sales-flow`, 3 commits ahead of `main`:
+  - `7fa1a34`: gitignore for graphify;
+  - `cc153b1`: the linear flow; the first v2 run passed 53/62 on it;
+  - `de4f6c9`: fixes for that run's 9 failures.
+  The branch is not pushed and there is no PR. `docs/` is the user's and stays untracked.
+- **ADK Web** runs as pid 156943, restarted by the user at 07:57:43 MYT, after `de4f6c9`, so it
+  serves the fixed code. It caches the agent: restart it after every code change. Stop and start
+  it in two separate commands (see CLAUDE.md).
+- **Astra's rerun of all 62 rows on `de4f6c9` is done:** 58 Pass, 4 Fail (0 Critical, 2 Major,
+  2 Minor). The run went from 08:00:35 to 08:36:16 MYT (00:00:35Z to 00:36:16Z): 37 sessions and
+  83 user turns in `apps/.adk/session.db`. Run A (with F6) is session `29551bf8`.
+  - Fixed since the first run: A3, B10, B11, C2, D4, D5, G6.
+  - Newly failing: B6 and B12 (Major).
+  - Still failing: D6 and E4 (Minor).
+- **Astra's bundle for the rerun** is under
+  `/mnt/c/Users/User/Documents/Codex/2026-09-24/files-mentioned-by-the-user-khind/outputs/`:
+  folder `KHIND_Smoke_Test_2026-09-24_Rerun2/` (report, results CSV, Evidence, Screenshots) and
+  `KHIND_Smoke_Test_Evidence_2026-09-24_Rerun2.zip`. It is not copied to Obsidian yet.
+- **Records:**
+  - the first run and its audit are in the Obsidian folder
+    `/mnt/d/Obsidian_folder/Personal/Personal/Khind Test/2026-09-24 - KHIND Linear Flow Smoke Test/`,
+    in `Claude Audit of Astra Verdicts.md`;
+  - the fix-round verification is `handoff/verification/fix_run_2026-09-24.txt`.
+- **Uncommitted:** this file.
 
-  | Check | Result |
-  |---|---|
-  | `unit_checks.py`, offline | 118 of 118 |
-  | `webhook_order.py` | 7 of 7 |
-  | `scenarios.py`, real Gemini: 15 scenarios, one per failing row plus the old ones | 49 of 49, twice |
+## The 4 rerun failures: evidence and fix direction
 
-- **Not done yet:** the full 62-row Astra rerun against the regenerated v2 sheet.
-- **ADK Web** (`adk web --port 8000 .`, pid 138908) still runs the OLD agent: it caches the agent,
-  and it started before the fixes. It must be restarted before the rerun. It is the user's
-  process, so ask first.
+Only B6 and B12 were checked in `session.db` for this handoff; no full audit yet. Astra's verdicts
+are in the rerun report. Find a session by its first message with
+`.venv/bin/python handoff/verification/extract_run.py 2026-09-24T00:00:00Z <out_dir>`.
 
-## Decisions by the user (2026-09-24)
-
-1. Commit the tested code on `feat/linear-sales-flow`. Done.
-2. Keep the test record in the Obsidian folder above. Done.
-3. Employment rules are confirmed: a pensioner is not working (handoff); self-employed, a
-   business owner, gig and part-time work count as working (RM1 line).
-4. A fact missing from the documents is not a handoff. The agent sends `KB_GAP_LINE`, then the
-   pending question. `rag-error` is only for a failed retrieval (tool status `error`).
-5. The coverage verdict moves into code. A Peninsular state alone counts as covered.
-6. Wording of the new fixed lines, approved:
-   - `KB_GAP_LINE`: "Maaf, maklumat [topik] belum ada dalam sistem saya. Pegawai kami akan sahkan
-     dengan cik/tuan nanti ya 🙏"
-   - `APPLICATION_COMPLETE_LINE`: "Terima kasih, butiran permohonan cik/tuan sudah lengkap! 👍 Boleh
-     hantar *gambar IC depan & belakang* sekarang?"
-7. The rerun covers all 62 rows.
-
-## What the fix commit changed
-
-| Row | Confirmed cause | Fix |
+| Row | What happened (checked in session.db) | Fix direction (to confirm) |
 |---|---|---|
-| A3 | Top-3 search over the whole corpus returned the Lite 480L price table. The 592L document holds RM99 and RM119 a month over 60 months. | `rag_tool`: search only the file of the product named in the query, else the active product (`top_k=8`, the whole document). |
-| G6 | No product switch on "balik pada 592L tadi". The same retrieval miss hid the weight (85 kg), then came a `rag-error` handoff. | A core rule: switch first. Scoped search. `KB_GAP_LINE` instead of a handoff. |
-| B10 | The model judged "96800" alone as covered. | `apps/services/coverage.py` decides. `advance_purchase_stage(postcode, town, state)` returns `ok`, `not_covered`, `need_town`, `need_state` or `need_location`. |
-| B11 | The reply rule and the coverage fragment said "reply ONLY with the location question", although the message held an area. | A stage-aware `reply_rule`: check a place given in the same message. |
-| C2 | "Ada aircond tak?" read as browsing. | The discovery fragment checks for a single product first; the pending step says "call set_product_interest instead of asking". |
-| D4 | No grouped list in the prompt at the location stage. | `PRODUCT_MENU` in the core prompt, copied exactly. |
-| D5 | The model followed its own "which product?" from D4. | A `Pending step` line in Current State; every reply ends with that question. |
-| D6 | "KHIND tidak menjual microwave" (false for the brand). | A rule: this scheme covers only the 8 products. |
-| E4 | Replies after the form was complete ended with a request, not a question. | Fixed `APPLICATION_COMPLETE_LINE`. The pending step asks for the IC photos. |
+| B6 (Major) | For "Poskod 87000, Labuan", `advance_purchase_stage` returned `not_covered`. The model then sent `escalate_to_live_agent` together with English reasoning text ("The tool output indicates … I need to call `escalate_to_live_agent` …"). `build_reply` treats text beside an escalate call as the handoff line and drops later text, so the customer got the reasoning, and the correct BM line in the next event was lost. The label and `escalated` were correct. | Do not trust text written beside an escalate call. Either extend `drop_text_beside_coverage_call` to escalate calls, so the text after the tool, or else the label's fallback line, is used; or let `build_reply` prefer the text after the call. Add a unit check for this sequence. |
+| B12 (Major) | For "Nak peti ais 592, saya duduk Kapit Sarawak" the tools were `set_product_interest` then `advance_purchase_stage` (`not_covered`), but the model never called `escalate_to_live_agent`. No `escalated` in State, so the USP was also prepended. No handoff reached the officer. | Make the coverage handoff deterministic: `advance_purchase_stage` escalates itself on `not_covered`, reusing the escalation logic, labels and Chatwoot call. The model then writes only the not-covered line. This also removes the escalate call that caused B6 in the coverage path. |
+| D6 (Minor) | The reply said "8 produk dalam senarai kami" without showing the list. That wording comes from the D6 core rule written in the fix round. | Rule wording: name the 3 categories (peti sejuk, mesin basuh & pengering, penyaman udara) and do not say "senarai" unless `PRODUCT_MENU` is shown. |
+| E4 (Minor) | Style only. A4 has no *bold*. A11 and F6 end with the fixed IC-photo question and have no emoji. A10, the fixed completion line with 👍, passed. | User decision (below): add an emoji to `IC_PHOTO_QUESTION`, which is approved wording, and/or ask for bold and an emoji in every reply; or relax E4. |
 
-Found and fixed during this work:
+## Decisions to ask the user first
 
-- **The model's own comments after a first pick.** The model added praise or invented claims after
-  almost every first pick, whatever the prompt said: 0 of 15 clean replies. One was "Penjimatan
-  tenaga elektrik sehingga 50%".
-  - `insert_pending_usp` now keeps only the question on a plain pick: the fixed location question
-    at the location step, otherwise the model's closing question.
-  - A pick is not plain when `query_product_info` or `advance_purchase_stage` ran in the same
-    turn. Both tools mark the turn with `reply_facts_invocation`.
-- **`vrag.list_files` failed in the server.** It goes to us-central1, because the vertexai SDK
-  ignores `GOOGLE_CLOUD_LOCATION`. `rag_tool` now calls `vertexai.init` with the corpus's region.
-- **The escalation tool crashed.** `dict(tool_context.state)` raises `KeyError: 0`, so every real
-  Chatwoot escalation would have crashed. It now uses `to_dict()`.
-- **Two guards:**
-  - Text written beside an `advance_purchase_stage` call is dropped.
-  - A turn that escalates gets no USP, so the fixed handoff line can apply.
-- **`customer_location` is now written.** The Chatwoot handoff note reads it.
+1. **E4:** change the approved IC-photo question (e.g. add 📸) and make bold and an emoji
+   mandatory, or relax the E4 criterion?
+2. **B12/B6:** should `advance_purchase_stage` escalate by itself on `not_covered`? It changes
+   the tool contract; the smoke sheet's B rows and CLAUDE.md need updating.
+3. **Unapproved wording** (written in the fix round, not yet confirmed by the user):
+   - `TOWN_QUESTION`: "Boleh kongsikan nama bandar atau kawasan pemasangan cik/tuan di {region}? 😊"
+   - `POSTCODE_QUESTION`: "Boleh kongsikan poskod kawasan pemasangan cik/tuan? 😊"
+4. **Obsidian:** copy the Rerun2 bundle as a subfolder of the 2026-09-24 folder, or as its own
+   dated folder?
+5. **Push and PR:** push `feat/linear-sales-flow` and open a PR to `main` after the next rerun?
+   Also: commit this handoff file?
 
 ## Activities for the next session, in order
 
-1. **Ask the user to restart ADK Web,** or do it with their OK:
-   `pkill -f "[a]dk web"`, then `.venv/bin/adk web --port 8000 .` from the repo root. Run these
-   as two separate commands (see CLAUDE.md).
-2. **The user runs Astra** on all 62 rows:
-   - the prompt is `handoff/smoke-test/KHIND-Astra-ComputerUse-Prompt-v2.md`, unchanged;
-   - the sheet is the regenerated `KHIND_Agent_Smoke_Test_Prompts_v2.csv` and `.xlsx`, whose
-     expectations now match the fixes (A3, A10, A11, B rows, D4, D6, E1, F6, F9, F10, G6 and the
-     Reference sheet);
-   - column L still holds the 2026-09-20 result.
-3. **Audit the rerun** as before:
-   - `.venv/bin/python handoff/verification/extract_run.py <run start, UTC> <out_dir>`;
-   - read `transcripts.txt` against the results CSV;
-   - trace every figure to the chunk `source` (now also `scope` and `products`);
-   - compare each row with the 2026-09-24 result (`KHIND_Agent_Smoke_Test_Results_2026-09-24.csv`
-     in the Obsidian folder).
-4. **Update** CLAUDE.md "Open issues", this file, and the Obsidian record: add the rerun bundle and
-   an audit note.
+1. Ask decisions 1-5 above.
+2. **Audit Rerun2 in full**, as for the first run:
+   - dump the run with `extract_run.py`;
+   - compare it with `KHIND_Agent_Smoke_Test_Results_2026-09-24_Rerun2.csv`;
+   - trace every figure to the chunk `source`, `scope` and `products`;
+   - spot-check passes (B-row handoff lines, PDPA rows A8-A10 and F6, first-pick replies);
+   - write the audit note next to the copied bundle.
+3. **Plan mode:** confirm the fix directions in the table above, then implement:
+   - add regression checks to `handoff/verification/unit_checks.py`;
+   - add real-Gemini scenarios to `scenarios.py`: Labuan, product + uncovered area in one
+     message, TV/microwave, post-form emoji;
+   - run on port 8001 with `KHIND_API_BASE=http://127.0.0.1:8001`, twice.
+4. **Update the smoke sheet** in `handoff/smoke-test/build_smoke_test_v2.py` for any contract
+   change (B2, B5-B7, B12 tool expectations; E4), then regenerate it with `uv`.
+5. **Ask the user** to restart ADK Web, and run Astra on the B rows, D1-D7, E4 and a regression
+   sample (A1-A11), or on all 62 rows if the tool contract changed.
+6. **Update** CLAUDE.md "Open issues", this file, and the Obsidian record. Commit with the user's
+   OK.
 
-## Backlog
+## Backlog (details in CLAUDE.md "Open issues")
 
-1. **Session layer.** Fix `apps/runner.py` so the Chatwoot webhook runs (defects in CLAUDE.md).
-   Then test on a real phone:
-   - media before text;
-   - handoff lines delivered, labels applied, and the handoff note showing `customer_location`;
-   - no double product list (the catalog message plus the model's list).
-2. **Ops.** Create the `not-working` label in Chatwoot.
-3. **Corpus**, for the user or KHIND:
-   - delete the older duplicates of `khind_acson_knowledge_base.md` and
-     `khind_dhp90_drymaster_heatpump_dryer_knowledge_base.md` (2026-09-12 03:15Z and 03:32Z);
-   - confirm which of the two DryMaster price tables is current;
-   - add the aircond monthly price if one exists.
-4. **IC photos.** `webhook.py` drops messages that hold only images, so the IC-photo step never
-   ends. Decide what happens after the photos: an officer handoff, or a note.
-5. **Housekeeping.** `KHIND_MASTERPROMPT.md` and `TASK_TRACKER.md` still describe the old flow.
-6. **Test gaps.** No row covers:
-   - a product question after the RM1 invite, or while the form is being filled;
+1. `apps/runner.py`: the session layer, so the Chatwoot webhook works; then a real phone test.
+2. Create the Chatwoot `not-working` label.
+3. RAG corpus: delete the older duplicate files; KHIND must confirm the DryMaster price; the aircond
+   monthly price is missing.
+4. The IC-photo step never ends, because the webhook drops messages that hold only images.
+5. `KHIND_MASTERPROMPT.md` and `TASK_TRACKER.md` still describe the old flow.
+6. **Test gaps**, with no row for:
+   - a product question after the RM1 invite or during the form;
    - a customer who declines the eligibility check;
-   - a comparison between two products (the search now covers both documents);
-   - a question with no product at discovery (it still searches the whole corpus).
+   - a comparison between two products;
+   - a question with no product at discovery.
 
 ## Read these instead of re-deriving
 
-- `CLAUDE.md`: the flow, where each rule is enforced, pitfalls, and open issues.
-- `handoff/verification/`:
-  - `unit_checks.py`, `webhook_order.py` and `scenarios.py` (use `KHIND_API_BASE`, port 8001);
+- `CLAUDE.md`: the flow, where each rule is enforced, pitfalls (vertexai region, `State.to_dict()`,
+  callback order, pkill), and open issues.
+- The approved plan and root causes of the fix round:
+  `/home/risdin/.claude/plans/witty-tumbling-ladybug.md`.
+- Commits: `git show de4f6c9` (the fix list is in the message) and `git show cc153b1`.
+- Astra's rerun report and CSV: in the `KHIND_Smoke_Test_2026-09-24_Rerun2/` folder above. Its
+  "Comparison with earlier run today" section lists the changed expectations.
+- The first-run audit: `Claude Audit of Astra Verdicts.md` in the Obsidian folder above.
+- The test tools in `handoff/verification/`:
+  - `unit_checks.py`: 118 checks;
+  - `webhook_order.py`;
+  - `scenarios.py`: 15 scenarios;
   - `extract_run.py`;
   - `fix_run_2026-09-24.txt`.
-- `handoff/smoke-test/build_smoke_test_v2.py`: regenerates the sheet from `apps/prompts/khind_prompts.py`
-  with `uv run --no-project --with openpyxl python handoff/smoke-test/build_smoke_test_v2.py`.
-- The approved plan for this fix round: `/home/risdin/.claude/plans/witty-tumbling-ladybug.md`.
-- Earlier plans: `/home/risdin/.claude/plans/continue-plan-from-home-risdin-claude-pl-breezy-wolf.md`
-  and `/home/risdin/.claude/plans/based-on-the-current-cheerful-wolf.md`.
+- The smoke-test package in `handoff/smoke-test/`:
+  - the builder;
+  - the v2 csv/xlsx;
+  - `KHIND-Astra-ComputerUse-Prompt-v2.md`, which Astra uses unchanged.
+
+## Suggested skills
+
+- `diagnose`: for B6 and B12. Reproduce them with `scenarios.py` on port 8001, minimise, fix, and
+  add a regression check.
+- `tdd`: to write the B6 (reasoning text beside an escalate call) and B12 (no escalate after
+  `not_covered`) checks first, or to start turning `handoff/verification/` into a pytest suite.
+- `code-review`: review the branch (`main..feat/linear-sales-flow`) before pushing or opening a PR.
+- `anthropic-skills:xlsx`: optional. Fill the v2 xlsx Summary from the Rerun2 CSV (columns G, I,
+  J, K).
+- `claude-md-management:revise-claude-md`: update CLAUDE.md after the fixes.
+- `simple-english`: the handoff, CLAUDE.md and the Obsidian notes are written in short, plain
+  English; keep that style.
 
 ## Environment
 
-- WSL2 (`Ubuntu-22.04`), `.venv` with Python 3.12, `google-adk==1.31.0` pinned, model
+- WSL2 (`Ubuntu-22.04`), `.venv` with Python 3.12, `google-adk==1.31.0` pinned, and
   `gemini-2.5-flash` with a thinking budget of 1024.
-- `openpyxl` is not in `.venv`; use `uv run --no-project --with openpyxl ...`. LibreOffice is
-  not installed.
-- Stop dev servers with `pkill -f "[a]dk web"` or `pkill -f "[a]dk api_server"`. Never put the
-  pkill and the restart in the same command.
+- `openpyxl` is not in `.venv`; use `uv run --no-project --with openpyxl ...`.
+- For verification, run the API server on port 8001 (`--session_service_uri memory://`); ADK Web
+  stays on 8000.
 - Secrets live in the git-ignored `.env` and service-account JSON. Never print or copy them. The
   test prompts use fictional identity data only.
