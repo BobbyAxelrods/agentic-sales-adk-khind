@@ -33,10 +33,11 @@ Strictly linear, one step at a time:
 
 At any step, a product question gets a 1-2 sentence `query_product_info` answer, then the pending
 step's question again. Before any pick, a question about one product is the pick: if the model
-only searches, `query_product_info` picks the product in code. A fact missing from the documents gets the fixed `KB_GAP_LINE` ("Pegawai kami
-akan sahkan …"), not a handoff; `rag-error` is only for a failed retrieval. Naming another product,
-including one picked earlier, calls `set_product_interest` (USP and media once) and keeps the current
-stage. There is no Q&A stage and no payslip question any more.
+only searches, `query_product_info` picks the product in code. A fact missing from the documents
+gets the fixed `KB_GAP_LINE` ("Pegawai kami akan sahkan …"), not a handoff; `rag-error` is only for
+a failed retrieval. Naming another product, including one picked earlier, calls
+`set_product_interest` (USP and media once) and keeps the current stage. There is no Q&A stage and
+no payslip question any more.
 
 ## Where the flow is enforced
 
