@@ -56,7 +56,8 @@ them.
    with the title `feat(flow): linear WhatsApp sales flow, smoke test 62 of 62` and the body from
    `handoff/2026-09-24-pr-description.md`. Record the PR URL here and in CLAUDE.md "History".
 2. **Push `feat/cloud-run`** too (same way). Open its PR after the flow PR is merged, so its diff
-   shows only the Cloud Run work.
+   shows only the Cloud Run work. Title: `feat(deploy): Cloud Run-ready Chatwoot webhook`; body:
+   `handoff/2026-09-24-pr-cloud-run.md`.
 3. **Ask the user to approve the GCP resources** in Phase 2, then create them.
 4. **The user sets up staging in Chatwoot:** the test inbox, an agent bot connected to it (any
    outgoing URL for now), and the bot's access token and Webhook Secret in Secret Manager.
