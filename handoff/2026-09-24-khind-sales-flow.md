@@ -21,8 +21,8 @@ them.
   - `docs/` is the user's and stays untracked.
 - **The GitHub repo is public** (the GitHub API says `"private": false`). Keep secrets, customer
   data, personal paths and other clients' names out of commits, deploy files and PRs.
-- **Cloud Run Phase 1 (code) and the Phase 2 code are done** on `feat/cloud-run`. Nothing is
-  deployed. The only GCP resource created is the Agent Engine `khind-sales-sessions`.
+- **Cloud Run Phase 1 (code) and Phase 2 are done.** The code is on `feat/cloud-run`. The GCP
+  resources the user approved exist (see Phase 2). Nothing is deployed.
 - **Checks on `feat/cloud-run`**, all passing:
   - offline: `unit_checks.py` 158, `session_checks.py` 13, `webhook_checks.py` 43. The webhook checks
     caught all 11 deliberate code breaks (a mutation test);
@@ -46,7 +46,10 @@ them.
   - **D4:** staging uses a separate test inbox (with its own WhatsApp number and agent bot). The user
     sets it up; it does not exist yet.
   - After a handoff, a chat that is pending again resumes the flow.
-- Not yet approved: creating any other GCP resource, and any deploy.
+  - The Phase 2 GCP resources: approved and created.
+  - Staging keeps its sessions in its own engine, `khind-sales-sessions-staging`.
+  - Staging handoffs are assigned to the same officer as in `.env` (`CHATWOOT_HUMAN_AGENT_ID`).
+  - **The staging deploy is not approved yet:** ask the user again before it.
 
 ## Next steps, in order
 
@@ -58,12 +61,11 @@ them.
 2. **Push `feat/cloud-run`** too (same way). Open its PR after the flow PR is merged, so its diff
    shows only the Cloud Run work. Title: `feat(deploy): Cloud Run-ready Chatwoot webhook`; body:
    `handoff/2026-09-24-pr-cloud-run.md`.
-3. **Ask the user to approve the GCP resources** in Phase 2, then create them.
-4. **The user sets up staging in Chatwoot:** the test inbox, an agent bot connected to it (any
-   outgoing URL for now), and the bot's access token and Webhook Secret in Secret Manager.
-5. **Deploy staging** (Phase 3, needs approval), set the bot's outgoing URL, then run the WhatsApp
-   smoke test.
-6. **Production:** the same steps with the live bot's secrets, then switch the live bot's URL.
+3. **The user sets up staging in Chatwoot** (Phase 3, "Before the deploy"): the test inbox, an
+   agent bot connected to it, and the bot's access token and Webhook Secret in Secret Manager.
+4. **Ask the user to approve the staging deploy**, then deploy (Phase 3). Set the test bot's
+   outgoing URL, then run the WhatsApp smoke test.
+5. **Production:** the same steps with the live bot's secrets, then switch the live bot's URL.
 
 ## Plan: publish the agent to Cloud Run
 
@@ -105,7 +107,8 @@ Done on `feat/cloud-run` (`121d44b`):
 - `constraints.txt` pins all 119 packages to the tested `.venv`.
 - At shutdown the app waits up to 8 s for running turns.
 
-To do, **after the user approves** (all in `prudential-poc-484904`):
+Created on 2026-09-24 with the user's approval (all in `prudential-poc-484904`), with these
+commands:
 
 ```
 PROJECT=prudential-poc-484904
@@ -123,16 +126,29 @@ for s in khind-staging-chatwoot-api-token khind-staging-chatwoot-webhook-secret;
 done
 ```
 
-- Use no JSON key for the service account.
-- The user adds the secret values in their own terminal, so the values never pass through a chat:
-  `gcloud secrets versions add khind-staging-chatwoot-api-token --data-file=-`, paste, then
-  Ctrl-D.
-- Cloud Run, Cloud Build, Artifact Registry (`cloud-run-source-deploy`) and Secret Manager are
+- The service account has no user-managed key (checked).
+- Both secrets exist with no version yet. Only the service account can read them.
+- The staging Agent Engine: `khind-sales-sessions-staging`, ID `3247842999241015296`, created with
+  `vertexai.Client(...).agent_engines.create(config={"display_name": ...})`.
+- `roles/aiplatform.user` covers Gemini, RAG queries and Agent Engine sessions. It also allows
+  changes to RAG corpora; a custom role could narrow it later.
+- Cloud Run, Cloud Build, Artifact Registry (`cloud-run-source-deploy`) and Secret Manager were
   already enabled.
-- Open question: should staging use its own Agent Engine (for example
-  `khind-sales-sessions-staging`), so test chats never share a store with customer chats?
 
 ### Phase 3: deploy, staging first (needs approval)
+
+Before the deploy, the user does this in Chatwoot and in their own terminal:
+1. Create the test WhatsApp inbox.
+2. Settings > Bots: add an agent bot (for example "KHIND Sales Agent (staging)"). Any outgoing URL
+   will do for now. Connect it to the test inbox (inbox settings, Bot Configuration).
+3. Put the bot's access token and its Webhook Secret into Secret Manager. Paste each value, then
+   Ctrl-D, so it never passes through a chat (the app strips the newline):
+   ```
+   gcloud secrets versions add khind-staging-chatwoot-api-token --project prudential-poc-484904 --data-file=-
+   gcloud secrets versions add khind-staging-chatwoot-webhook-secret --project prudential-poc-484904 --data-file=-
+   ```
+
+The deploy, after approval (staging: engine `3247842999241015296`, officer from `.env`):
 
 ```
 gcloud run deploy khind-sales-agent-staging --source . --region asia-southeast1 \
