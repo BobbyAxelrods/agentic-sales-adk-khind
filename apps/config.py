@@ -11,6 +11,9 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        # A secret pasted into Secret Manager often ends with a newline, which would break
+        # the Chatwoot token header and the signature check.
+        str_strip_whitespace=True,
     )
 
     # GCP / Vertex AI
