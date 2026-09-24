@@ -75,6 +75,10 @@ line, not a handoff.
   `apps/runner.py` calls async session methods without `await`. `get_session` returns a copy,
   `VertexAiSessionService` has no `update_session`, and `VERTEX_AI_AGENT_ENGINE_ID` is never
   read. Until this is fixed, the flow runs only in ADK Web.
+- `POST /webhook` acts on any payload that holds text. It checks neither the event, the message
+  type nor `private`, so the bot's own replies, officer replies and status events can be answered
+  as customer text. `CHATWOOT_WEBHOOK_SECRET` is never checked. Both must be fixed before the
+  webhook gets a public URL.
 - Found in the rerun-3 audit:
   - No retry on a transient Vertex AI error. G5's first attempt got a 502. On WhatsApp the
     customer would get the technical-problem line and must write again.

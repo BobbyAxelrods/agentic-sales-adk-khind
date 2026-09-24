@@ -154,6 +154,10 @@ no payslip question any more.
   `get_session` returns a copy, `VertexAiSessionService` has no `update_session`, and
   `VERTEX_AI_AGENT_ENGINE_ID` in `.env` is never read. After the fix, check that the catalog menu
   and the model's own numbered list do not both reach the customer.
+- `POST /webhook` acts on any payload that holds text: it checks neither `event`, `message_type`
+  nor `private`, so the bot's own replies, officer replies and status events can be answered as
+  customer text. `CHATWOOT_WEBHOOK_SECRET` is in `.env` but never checked. Fix both before the
+  webhook gets a public URL. The Cloud Run plan is in `handoff/2026-09-24-khind-sales-flow.md`.
 - RAG corpus data (retrieval itself is now limited to the product's document):
   - `khind_acson_knowledge_base.md` and `khind_dhp90_drymaster_heatpump_dryer_knowledge_base.md`
     were each uploaded twice. The older copies (2026-09-12 03:15Z and 03:32Z) differ from the newer
