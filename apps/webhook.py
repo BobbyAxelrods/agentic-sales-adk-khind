@@ -136,6 +136,13 @@ def _track(coro) -> asyncio.Task:
     return task
 
 
+async def finish_background_work(timeout: float) -> None:
+    """Wait up to timeout seconds for running turns and uploads (called at shutdown)."""
+    if _background_tasks:
+        logger.info("Waiting for %d webhook task(s) before shutdown.", len(_background_tasks))
+        await asyncio.wait(set(_background_tasks), timeout=timeout)
+
+
 async def _in_order(conversation_id: str, handle: Callable[[], Awaitable[None]]) -> None:
     """Run handle() after the earlier messages of this conversation (asyncio.Lock is FIFO)."""
     lock = _conversation_locks.setdefault(conversation_id, asyncio.Lock())

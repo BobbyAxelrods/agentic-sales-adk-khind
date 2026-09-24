@@ -227,6 +227,11 @@ async def repeat_and_background_checks(client):
     check(order[:2] == [("turn_start", "A"), ("turn_start", "B")], "two chats run their turns at the same time")
     check(not wh._conversation_locks, "no per-chat lock is left once the chats are idle")
 
+    reset(delay=0.3)
+    await post(client, payload("sebelum tutup"))
+    await wh.finish_background_work(timeout=2.0)
+    check(kinds()[-2:] == ["turn_end", "text"], "at shutdown, a running turn finishes and sends its reply")
+
 
 async def order_checks(client):
     reset(state={"purchase_stage": "discovery"})

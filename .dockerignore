@@ -1,0 +1,8 @@
+# Allow list: the image needs only these. Never send .env or the service-account key.
+*
+!requirements.txt
+!constraints.txt
+!apps
+apps/.adk
+**/__pycache__
+**/*.pyc

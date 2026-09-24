@@ -1,0 +1,13 @@
+# Files uploaded to Cloud Build by `gcloud run deploy --source .` (allow list).
+# Never upload .env or the service-account key. Check with:
+#   gcloud meta list-files-for-upload
+*
+!Dockerfile
+!.dockerignore
+!requirements.txt
+!constraints.txt
+!apps/
+!apps/**
+apps/.adk/
+**/__pycache__/
+**/*.pyc

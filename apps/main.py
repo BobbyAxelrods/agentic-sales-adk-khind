@@ -16,6 +16,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 
 from apps.config import settings
+from apps.webhook import finish_background_work
 from apps.webhook import router as webhook_router
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error("CHATWOOT_WEBHOOK_SECRET is not set: every webhook call will be rejected.")
     logger.info("ADK Runner initialised. KHIND sales agent ready.")
     yield
+    # Turns run after the webhook returns. Cloud Run allows 10 s after SIGTERM, so let
+    # running turns send their replies first.
+    await finish_background_work(timeout=8.0)
     logger.info("Shutting down KHIND sales agent.")
 
 
