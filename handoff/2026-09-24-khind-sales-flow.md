@@ -1,4 +1,4 @@
-# Handoff: KHIND sales flow. Next session: Astra rerun 3 (all 62 rows), then push and open the PR
+# Handoff: KHIND sales flow. Next session: Astra rerun 3 (all 62 rows, the last test), then push and open the PR
 
 Earlier versions of this file are in git history:
 - `cc153b1`: the first v2 run;
@@ -38,6 +38,8 @@ Rules, enforcement points and pitfalls are in `CLAUDE.md`; this file does not re
   - Git: commit when the checks pass. Push and open a PR to `main` only after Astra's next rerun.
   - PDPA: code removes the customer's personal values from replies.
   - Media: a turn that escalated gets no media.
+  - Rerun 3 is the last test. Whatever fails is recorded as an open issue, with evidence. It is not
+    fixed, and there is no rerun 4 before the PR.
 - **The fixes** (details in CLAUDE.md, "Where the flow is enforced"):
   - `advance_purchase_stage` is async. On `not_covered` it calls `escalation_tool.hand_off`, the
     same code as `escalate_to_live_agent`. A repeated handoff with the same label in the same turn
@@ -76,13 +78,15 @@ Rules, enforcement points and pitfalls are in `CLAUDE.md`; this file does not re
 
 ## Decisions to ask the user first
 
-None are open. The user settled the PDPA guard and the media question on 2026-09-24.
+None are open. The user settled the PDPA guard and the media question on 2026-09-24, and made
+rerun 3 the last test.
 
 ## Activities for the next session, in order
 
 1. Ask the user to restart ADK Web (it still serves `de4f6c9`), then run Astra on **all 62
    rows**, because the tool contract changed. Use the regenerated
    `KHIND_Agent_Smoke_Test_Prompts_v2.csv` and the updated `KHIND-Astra-ComputerUse-Prompt-v2.md`.
+   **This is the last test:** record every failure; do not fix it and do not rerun.
 2. Audit rerun 3 as for rerun 2:
    - dump it with `.venv/bin/python handoff/verification/extract_run.py <start UTC> <out_dir>`;
    - compare it with Astra's CSV;
@@ -90,9 +94,11 @@ None are open. The user settled the PDPA guard and the media question on 2026-09
    - look for text beside tool calls;
    - check the handoff rows: B2, B5-B7, B12, F1-F3, F7-F9.
 3. File the bundle in Obsidian the same way (its own dated folder, `Inputs/`, zip, audit note).
-4. If rerun 3 passes: run the `code-review` skill on `main..feat/linear-sales-flow`, then push and
-   open the PR. The user approved this order.
-5. Update CLAUDE.md "Open issues", this file and the Obsidian record, and commit.
+4. Record every failure and audit finding, with evidence, in CLAUDE.md "Open issues", this file
+   and the Obsidian audit note. Commit.
+5. Push `feat/linear-sales-flow` and open the PR to `main`, whatever rerun 3's result. List the
+   open failures in the PR description. If a code review is run first, note its findings in the PR
+   as well; do not fix them.
 
 ## Backlog (details in CLAUDE.md "Open issues")
 
