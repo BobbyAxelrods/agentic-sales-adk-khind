@@ -1,6 +1,7 @@
 """ADK entry point exposing the KHIND WhatsApp sales agent."""
 
 from google.adk.agents import LlmAgent
+from google.adk.models import Gemini
 from google.genai import types as genai_types
 
 from apps.config import settings
@@ -23,7 +24,12 @@ from apps.tools.session_tools import (
 
 root_agent = LlmAgent(
 	name="khind_sales_agent",
-	model=settings.llm_model,
+	# Retry a transient Vertex AI error (408, 429, 5xx, timeouts) before the turn fails.
+	# Without it the customer gets the runner's technical-problem line (G5 of rerun 3: a 502).
+	model=Gemini(
+		model=settings.llm_model,
+		retry_options=genai_types.HttpRetryOptions(attempts=3, initial_delay=1.0, max_delay=8.0),
+	),
 	description="KHIND Malaysia WhatsApp sales advisor.",
 	instruction=get_khind_instruction,
 	tools=[
