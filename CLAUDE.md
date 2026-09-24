@@ -135,15 +135,19 @@ no payslip question any more.
 
 ## Open issues (as of 2026-09-24; update as they are fixed)
 
-- Smoke test v2 (2026-09-24, Astra in ADK Web): 53 of 62 on `cc153b1`, then 58 of 62 on
-  `de4f6c9` (rerun 2).
-  - Rerun 2's 4 failures (B6, B12, D6, E4) are fixed in `e1a3458`. The next commit adds the PDPA
-    guard, no media on a handoff turn, and the pick by search (E1). Offline checks and scripted
-    real-Gemini chats pass (`handoff/verification/rerun2_fix_run_2026-09-24.txt`).
-  - Rerun 3 (all 62 rows on `04ec5c7`, 11:07-11:40 MYT) is the last test, by the user's decision:
-    its failures are recorded here, not fixed, and the PR follows whatever the result. Astra
-    reports 62 of 62 Pass; the audit against `session.db` is still to do. Status and next steps:
-    `handoff/2026-09-24-khind-sales-flow.md`.
+- Smoke test v2 (2026-09-24, Astra in ADK Web): 53 of 62 on `cc153b1`, 58 of 62 on `de4f6c9`
+  (rerun 2), then 62 of 62 on `04ec5c7` (rerun 3, 11:07-11:40 MYT).
+  - Rerun 3 is the last test, by the user's decision: its findings are recorded here, not fixed.
+    The audit against `session.db` confirmed all 62 passes (Obsidian folder
+    `2026-09-24 - KHIND Linear Flow Smoke Test - Rerun 3`). It found:
+    - G5's first attempt failed with a Vertex AI 502. The model is a plain string with no
+      `retry_options`, so ADK does not retry. On WhatsApp the customer gets the runner's
+      technical-problem line and must write again.
+    - D2 ("Ada promosi ke sekarang?") got the missing-fact line, although the DryMaster chunks of
+      that turn list the RM1 processing fee and free delivery, installation, relocation, servicing
+      and insurance. Rerun 2 quoted them.
+    - C6 ("12", new session) said "senarai produk kami" without showing the list. The "senarai"
+      rule in the prompt covers only items outside the 8 products.
 
 - The Chatwoot webhook fails on every message under ADK 1.31. `apps/runner.py` calls async session
   methods without `await`, so the first `patch_session_state` raises. Even when awaited,
@@ -154,11 +158,14 @@ no payslip question any more.
   - `khind_acson_knowledge_base.md` and `khind_dhp90_drymaster_heatpump_dryer_knowledge_base.md`
     were each uploaded twice. The older copies (2026-09-12 03:15Z and 03:32Z) differ from the newer
     ones and should be deleted. Until then the code uses the newest.
-  - The DryMaster document holds two conflicting price tables (RM85/month for 48 months, against
-    RM105 for 48 and RM135 for 36). KHIND must confirm which is current.
+  - The DryMaster document holds two conflicting sources. Prices: RM85/month for 48 months,
+    against RM105 for 48 and RM135 for 36. Warranty: 4 years on RTO and a 10-year motor warranty,
+    against 4 or 3 years by plan and a 10-year compressor warranty. The agent said "motor" in
+    rerun 3 and "compressor" in rerun 2. KHIND must confirm which is current.
   - The aircond document has no monthly price, so the agent sends the missing-fact line.
 - In the form step the model lists the missing fields in the form layout, although the rule says
-  not to resend the form. (Its name echo is now removed by `strip_personal_values`.)
+  not to resend the form. It did not happen in rerun 3. (Its name echo is now removed by
+  `strip_personal_values`.)
 - Route A of the webhook (a WhatsApp list pick) sets the conversation to pending after its text
   even when the chat was handed over; Route B does not.
 - The `not-working` label must be created in Chatwoot so these handoffs show in filters.
@@ -193,3 +200,6 @@ no payslip question any more.
   - a turn that escalated gets no media;
   - `query_product_info` picks the product before any pick. After the rerun-2 prompt changes the
     model skipped that pick in E1 in 3 of 10 scripted runs (0 of 8 on the old code).
+- 2026-09-24 (rerun 3, 62 of 62 on `04ec5c7`): the last test, by the user's decision. The audit
+  confirmed every pass. Its findings are under "Open issues" and are not fixed. The rule checks it
+  added are in `handoff/verification/check_run.py`.
