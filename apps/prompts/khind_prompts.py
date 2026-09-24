@@ -80,6 +80,12 @@ IC_PHOTO_QUESTION = "Boleh hantar *gambar IC depan & belakang* sekarang? 📸"
 APPLICATION_COMPLETE_LINE = (
     f"Terima kasih, butiran permohonan cik/tuan sudah lengkap! 👍 {IC_PHOTO_QUESTION}"
 )
+# Sent by the webhook, with no model turn, when photos arrive after the application is
+# complete. The chat then goes to an officer (label human-required).
+IC_PHOTOS_RECEIVED_LINE = (
+    "Terima kasih, gambar IC sudah kami terima! 👍 "
+    "Pegawai kami akan semak permohonan cik/tuan dan hubungi cik/tuan nanti ya 🙏"
+)
 # A fact the knowledge base does not hold. Not a handoff: the pending question follows.
 KB_GAP_LINE = (
     "Maaf, maklumat [topik] belum ada dalam sistem saya. "

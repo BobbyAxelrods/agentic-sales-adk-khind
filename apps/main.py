@@ -36,6 +36,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         root_logger.setLevel(logging.INFO)
 
     import apps.runner  # noqa: F401 — triggers Runner + session service init
+    if not settings.chatwoot_webhook_secret:
+        logger.error("CHATWOOT_WEBHOOK_SECRET is not set: every webhook call will be rejected.")
     logger.info("ADK Runner initialised. KHIND sales agent ready.")
     yield
     logger.info("Shutting down KHIND sales agent.")

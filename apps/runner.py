@@ -1,25 +1,28 @@
-"""ADK Runner singleton — one instance shared across all webhook requests.
+"""ADK Runner for the Chatwoot webhook, on a durable session store.
 
-Session strategy — write-behind cache:
-  - First message from a customer: load session from Vertex AI once, cache in memory.
-  - All subsequent turns: served entirely from the in-memory cache — zero Vertex latency.
-  - After every turn: state is pushed to Vertex AI in a background task (non-blocking).
-
-This means:
-  - Turn latency = LLM + tools only. No Vertex session read/write on the hot path.
-  - Conversation history survives server restarts (Vertex is the source of truth).
-  - If the background push fails, it is retried on the next turn's background flush.
+Every turn reads and writes the store directly: Vertex AI Agent Engine sessions when
+VERTEX_AI_AGENT_ENGINE_ID is set, else process memory (local runs only: lost on restart).
+Nothing is cached in the process, so any Cloud Run instance can serve any conversation.
+The webhook runs one turn at a time per conversation, so two turns never write one
+session at the same time.
 """
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import logging
-from typing import Any
+import uuid
+from typing import Any, Optional
 
+from google.adk.events import Event, EventActions
 from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService, VertexAiSessionService
+from google.adk.sessions import (
+    BaseSessionService,
+    InMemorySessionService,
+    Session,
+    VertexAiSessionService,
+)
+from google.adk.sessions.base_session_service import GetSessionConfig
 from google.genai import types as genai_types
 
 from apps.agent import root_agent
@@ -30,184 +33,112 @@ logger = logging.getLogger(__name__)
 
 APP_NAME = "khind_sales_agent"
 
+TECHNICAL_PROBLEM_LINE = "Maaf, sistem sedang mengalami masalah teknikal. Sila cuba sebentar lagi. 🙏"
+NOT_UNDERSTOOD_LINE = "Maaf, saya tidak faham. Boleh ulangi soalan anda? 😊"
+
 _DEFAULT_STATE: dict[str, Any] = {
     "purchase_stage": "discovery",
     "pitched_products": [],
     "initial_media_sent_products": [],
-    "catalog_sent": False,
 }
 
-# ---------------------------------------------------------------------------
-# Two-layer session backend
-# ---------------------------------------------------------------------------
+# A state read needs the session resource only, not the conversation's events.
+_STATE_ONLY = GetSessionConfig(num_recent_events=0)
 
-# Hot layer — serves every turn with zero network latency.
-_memory = InMemorySessionService()
 
-# Cold layer — durable store. Only touched on first load and background flush.
-_vertex = VertexAiSessionService(
-    project=settings.google_cloud_project,
-    location=settings.google_cloud_location,
-)
+def _build_session_service() -> BaseSessionService:
+    if settings.vertex_ai_agent_engine_id:
+        return VertexAiSessionService(
+            project=settings.google_cloud_project,
+            location=settings.google_cloud_location,
+            agent_engine_id=settings.vertex_ai_agent_engine_id,
+        )
+    logger.warning(
+        "VERTEX_AI_AGENT_ENGINE_ID is not set: sessions are kept in process memory "
+        "and are lost on restart."
+    )
+    return InMemorySessionService()
 
-# Tracks which session IDs have been loaded from Vertex into memory.
-_loaded: set[str] = set()
 
-# ADK Runner uses the in-memory layer exclusively — fast path only.
+session_service = _build_session_service()
+
 runner = Runner(
     agent=root_agent,
     app_name=APP_NAME,
-    session_service=_memory,
+    session_service=session_service,
 )
 
 
-# ---------------------------------------------------------------------------
-# Session bootstrap
-# ---------------------------------------------------------------------------
+def session_id_for(conversation_id: str) -> str:
+    """Return the session ID of a Chatwoot conversation.
 
-async def _bootstrap_session(session_id: str) -> None:
-    """Load session from Vertex into memory on first contact.
-
-    If Vertex has no session yet (new customer), create one in both layers.
-    Subsequent calls for the same session_id are a no-op (guarded by _loaded).
+    Agent Engine session IDs allow only [a-z0-9-] and must start with a letter, so the
+    older "conv_<id>" form is not valid.
     """
-    if session_id in _loaded:
+    return f"conv-{conversation_id}"
+
+
+async def _get_session(session_id: str) -> Optional[Session]:
+    return await session_service.get_session(
+        app_name=APP_NAME,
+        user_id=session_id,
+        session_id=session_id,
+        config=_STATE_ONLY,
+    )
+
+
+async def ensure_session(session_id: str, conversation_id: str) -> dict[str, Any]:
+    """Return the session state, and create the session on the customer's first message."""
+    session = await _get_session(session_id)
+    if session is None:
+        state = copy.deepcopy(_DEFAULT_STATE)
+        # Read by the escalation tool, which calls Chatwoot itself.
+        state["chatwoot_conversation_id"] = conversation_id
+        session = await session_service.create_session(
+            app_name=APP_NAME,
+            user_id=session_id,
+            session_id=session_id,
+            state=state,
+        )
+    return copy.deepcopy(session.state)
+
+
+async def get_session_state(session_id: str) -> dict[str, Any]:
+    """Return the stored session state ({} for an unknown session)."""
+    session = await _get_session(session_id)
+    return copy.deepcopy(session.state) if session else {}
+
+
+async def patch_session_state(session_id: str, updates: dict[str, Any]) -> None:
+    """Write state keys outside an agent turn (webhook side effects such as the media flag).
+
+    The change is stored as an event with a state delta. Editing the state of a session
+    that get_session returned would change only a copy.
+    """
+    session = await _get_session(session_id)
+    if session is None:
+        logger.warning("patch_session_state: session %s not found", session_id)
         return
-
-    vertex_session = await asyncio.to_thread(
-        _vertex.get_session,
-        app_name=APP_NAME,
-        user_id=session_id,
-        session_id=session_id,
+    await session_service.append_event(
+        session,
+        Event(
+            invocation_id=f"webhook-{uuid.uuid4().hex}",
+            author="user",
+            actions=EventActions(state_delta=dict(updates)),
+        ),
     )
 
-    if vertex_session is None:
-        # Brand-new customer — create in both layers.
-        initial_state = copy.deepcopy(_DEFAULT_STATE)
-        await asyncio.to_thread(
-            _vertex.create_session,
-            app_name=APP_NAME,
-            user_id=session_id,
-            session_id=session_id,
-            state=initial_state,
-        )
-        _memory.create_session(
-            app_name=APP_NAME,
-            user_id=session_id,
-            session_id=session_id,
-            state=copy.deepcopy(initial_state),
-        )
-    else:
-        # Returning customer — hydrate memory from Vertex.
-        mem_session = _memory.get_session(
-            app_name=APP_NAME,
-            user_id=session_id,
-            session_id=session_id,
-        )
-        if mem_session is None:
-            _memory.create_session(
-                app_name=APP_NAME,
-                user_id=session_id,
-                session_id=session_id,
-                state=copy.deepcopy(dict(vertex_session.state)),
-            )
-        else:
-            mem_session.state.update(vertex_session.state)
 
-    _loaded.add(session_id)
+async def run_turn(
+    session_id: str,
+    user_message: str,
+    state_delta: Optional[dict[str, Any]] = None,
+) -> tuple[str, dict[str, Any]]:
+    """Run one conversation turn. Returns (reply_text, state after the turn).
 
-
-# ---------------------------------------------------------------------------
-# Background flush to Vertex
-# ---------------------------------------------------------------------------
-
-async def _flush_to_vertex(session_id: str) -> None:
-    """Push current in-memory state to Vertex AI in the background.
-
-    Called as a fire-and-forget task after every turn — does not block the reply.
-    If this fails, Vertex state is stale by one turn but memory is correct,
-    so the next turn still works fine and the next flush will catch up.
+    state_delta: state changes stored with the customer's message, before the model runs.
+    If the turn fails, the reply is the technical-problem line and the state is {}.
     """
-    mem_session = _memory.get_session(
-        app_name=APP_NAME,
-        user_id=session_id,
-        session_id=session_id,
-    )
-    if mem_session is None:
-        return
-
-    state_snapshot = copy.deepcopy(dict(mem_session.state))
-
-    try:
-        vertex_session = await asyncio.to_thread(
-            _vertex.get_session,
-            app_name=APP_NAME,
-            user_id=session_id,
-            session_id=session_id,
-        )
-        if vertex_session is not None:
-            # Pass state_snapshot as a plain dict argument — no lambda, no shared
-            # object mutation across threads.
-            await asyncio.to_thread(
-                _vertex.update_session,
-                app_name=APP_NAME,
-                user_id=session_id,
-                session_id=session_id,
-                state=state_snapshot,
-            )
-        else:
-            # Session disappeared from Vertex (unlikely) — recreate it.
-            await asyncio.to_thread(
-                _vertex.create_session,
-                app_name=APP_NAME,
-                user_id=session_id,
-                session_id=session_id,
-                state=state_snapshot,
-            )
-    except Exception:
-        logger.warning(
-            "Background Vertex flush failed for session %s — will retry next turn.",
-            session_id,
-        )
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-def get_session_state(session_id: str) -> dict[str, Any]:
-    """Return a snapshot of the current in-memory session state."""
-    session = _memory.get_session(
-        app_name=APP_NAME,
-        user_id=session_id,
-        session_id=session_id,
-    )
-    return copy.deepcopy(dict(session.state)) if session else {}
-
-
-def patch_session_state(session_id: str, updates: dict[str, Any]) -> None:
-    """Directly write state keys from the webhook layer (non-LLM side effects).
-
-    Only use for flags like catalog_sent, initial_media_sent_products.
-    Do not overwrite state that the agent tools own.
-    """
-    session = _memory.get_session(
-        app_name=APP_NAME,
-        user_id=session_id,
-        session_id=session_id,
-    )
-    if session is not None:
-        session.state.update(updates)
-
-
-async def run_turn(session_id: str, user_message: str) -> tuple[str, dict[str, Any]]:
-    """Run one conversation turn. Returns (reply_text, updated_state_snapshot).
-
-    Hot path: bootstrap (no-op after first contact) → ADK in-memory turn → snapshot.
-    Cold path (background): flush updated state to Vertex AI after replying.
-    """
-    await _bootstrap_session(session_id)
-
     content = genai_types.Content(
         role="user",
         parts=[genai_types.Part(text=user_message)],
@@ -219,19 +150,15 @@ async def run_turn(session_id: str, user_message: str) -> tuple[str, dict[str, A
             user_id=session_id,
             session_id=session_id,
             new_message=content,
+            state_delta=state_delta or None,
         ):
             events.append(event)
+        state = await get_session_state(session_id)
     except Exception:
         logger.exception("ADK runner failed for session %s", session_id)
-        fallback = "Maaf, sistem sedang mengalami masalah teknikal. Sila cuba sebentar lagi. 🙏"
-        return fallback, get_session_state(session_id)
+        return TECHNICAL_PROBLEM_LINE, {}
 
     # build_reply also keeps text written alongside a tool call (e.g. a handoff line),
     # which is_final_response() alone would drop.
-    reply_text = build_reply(events) or "Maaf, saya tidak faham. Boleh ulangi soalan anda? 😊"
-    state = get_session_state(session_id)
-
-    # Fire-and-forget — Vertex write does not block the customer reply.
-    asyncio.create_task(_flush_to_vertex(session_id))
-
+    reply_text = build_reply(events) or NOT_UNDERSTOOD_LINE
     return reply_text, state

@@ -120,45 +120,21 @@ class ChatwootClient:
 
         await _do()
 
-    async def send_product_list(self, conversation_id: str, catalog: dict) -> None:
-        """Send the KHIND product catalog as a numbered text menu.
+    async def get_conversation_status(self, conversation_id: str) -> str | None:
+        """Return the conversation's current status ("pending", "open" ...), or None on error.
 
-        Chatwoot does not expose a direct WhatsApp interactive-list API, so
-        we render a clean numbered text menu as a fallback. When Chatwoot adds
-        native interactive-list support, replace the body of this method.
+        The bot owns a chat while it is pending. Messages sent with the agent bot's token
+        never change the status, so the bot does not set it back to pending itself.
         """
         if not self._configured:
-            logger.warning("Chatwoot not configured — skipping send_product_list.")
-            return
-
-        lines: list[str] = ["*Pilih produk KHIND yang diminati:*\n"]
-        n = 1
-        for section in catalog.get("sections", []):
-            lines.append(f"*{section['title']}*")
-            for row in section.get("rows", []):
-                lines.append(f"{n}. {row['title']} — {row['description']}")
-                n += 1
-            lines.append("")
-
-        await self.send_text(conversation_id, "\n".join(lines).strip())
-
-    async def set_conversation_pending(self, conversation_id: str) -> None:
-        """Toggle conversation status back to 'pending' to keep the bot gate active.
-
-        Chatwoot auto-transitions to 'open' when the bot sends a message via API.
-        Call this after every bot reply so the bot continues handling the conversation.
-        """
-        if not self._configured:
-            return
+            return None
         try:
-            r = await _get_http().post(
-                f"{self._base(conversation_id)}/toggle_status",
-                headers=self._auth_headers,
-                json={"status": "pending"},
-            )
+            r = await _get_http().get(self._base(conversation_id), headers=self._auth_headers)
             r.raise_for_status()
+            return r.json().get("status")
         except Exception:
-            logger.warning("set_conversation_pending failed (conv=%s)", conversation_id)
+            logger.warning("get_conversation_status failed (conv=%s)", conversation_id)
+            return None
 
     async def escalate_conversation(
         self,
@@ -170,10 +146,11 @@ class ChatwootClient:
 
         Steps:
         1. Toggle status to 'open' — disables the bot gate (must complete first).
-        2. In parallel: apply label + post private context note + assign to agent or team.
+        2. In parallel: add the label + post private context note + assign to agent or team.
 
         Assignment uses CHATWOOT_HUMAN_AGENT_ID if set, else CHATWOOT_HUMAN_TEAM_ID.
         If neither is set the conversation is labelled but not assigned.
+        Returns True once the chat is open; a failed step 2 call is logged only.
         """
         if not self._configured:
             logger.warning("Chatwoot not configured — skipping escalation (conv=%s).", conversation_id)
@@ -201,52 +178,72 @@ class ChatwootClient:
         base = self._base(conversation_id)
         headers = self._auth_headers
 
+        client = _get_http()
+        json_headers = {**headers, "Content-Type": "application/json"}
+
+        async def add_label() -> httpx.Response:
+            # POST /labels replaces all of the chat's labels, so send the current ones too.
+            labels: list[str] = []
+            try:
+                current = await client.get(f"{base}/labels", headers=headers)
+                current.raise_for_status()
+                labels = list(current.json().get("payload") or [])
+            except Exception:
+                logger.warning(
+                    "Could not read the labels of conv=%s; setting %s only.", conversation_id, label
+                )
+            if label not in labels:
+                labels.append(label)
+            return await client.post(f"{base}/labels", headers=json_headers, json={"labels": labels})
+
         try:
-            async with httpx.AsyncClient(timeout=_SEND_TIMEOUT) as client:
-                # Step 1 — open conversation (disables bot gate)
-                (await client.post(
-                    f"{base}/toggle_status",
-                    headers=headers,
-                    json={"status": "open"},
-                )).raise_for_status()
+            # Step 1 — open conversation (disables bot gate)
+            (await client.post(
+                f"{base}/toggle_status",
+                headers=headers,
+                json={"status": "open"},
+            )).raise_for_status()
 
-                # Step 2 — label + private note + assignment in parallel
-                tasks = [
-                    client.post(
-                        f"{base}/labels",
-                        headers={**headers, "Content-Type": "application/json"},
-                        json={"labels": [label]},
-                    ),
-                    client.post(
-                        f"{base}/messages",
-                        headers={**headers, "Content-Type": "application/json"},
-                        json={"content": private_note, "message_type": "outgoing", "private": True},
-                    ),
-                ]
-                if settings.chatwoot_human_agent_id:
-                    tasks.append(client.post(
-                        f"{base}/assignments",
-                        headers={**headers, "Content-Type": "application/json"},
-                        json={"assignee_id": int(settings.chatwoot_human_agent_id)},
-                    ))
-                elif settings.chatwoot_human_team_id:
-                    tasks.append(client.post(
-                        f"{base}/assignments",
-                        headers={**headers, "Content-Type": "application/json"},
-                        json={"team_id": int(settings.chatwoot_human_team_id)},
-                    ))
+            # Step 2 — label + private note + assignment in parallel
+            steps = {
+                "label": add_label(),
+                "note": client.post(
+                    f"{base}/messages",
+                    headers=json_headers,
+                    json={"content": private_note, "message_type": "outgoing", "private": True},
+                ),
+            }
+            if settings.chatwoot_human_agent_id:
+                steps["assignment"] = client.post(
+                    f"{base}/assignments",
+                    headers=json_headers,
+                    json={"assignee_id": int(settings.chatwoot_human_agent_id)},
+                )
+            elif settings.chatwoot_human_team_id:
+                steps["assignment"] = client.post(
+                    f"{base}/assignments",
+                    headers=json_headers,
+                    json={"team_id": int(settings.chatwoot_human_team_id)},
+                )
 
-                await asyncio.gather(*tasks)
-
-            logger.info(
-                "escalate_conversation: conv=%s label=%s handed to human.", conversation_id, label
-            )
-            return True
+            results = await asyncio.gather(*steps.values(), return_exceptions=True)
         except Exception:
             logger.exception(
                 "escalate_conversation failed (conv=%s label=%s)", conversation_id, label
             )
             return False
+
+        for step, result in zip(steps, results):
+            if isinstance(result, BaseException) or not result.is_success:
+                logger.error(
+                    "escalate_conversation: %s failed (conv=%s label=%s): %s",
+                    step, conversation_id, label,
+                    result if isinstance(result, BaseException) else result.status_code,
+                )
+        logger.info(
+            "escalate_conversation: conv=%s label=%s handed to human.", conversation_id, label
+        )
+        return True
 
 
 # Module-level singleton — import and use directly.

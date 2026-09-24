@@ -25,6 +25,10 @@ class Settings(BaseSettings):
         alias="RAG_CORPUS_NAME",
     )
 
+    # Session store: the Agent Engine resource ID. Empty keeps sessions in process memory
+    # (local runs only: lost on restart and not shared between instances).
+    vertex_ai_agent_engine_id: str = Field(default="", alias="VERTEX_AI_AGENT_ENGINE_ID")
+
     # Google Cloud Storage
     gcs_bucket: str = Field(default="khind_2028", alias="GCS_BUCKET")
 
@@ -32,6 +36,9 @@ class Settings(BaseSettings):
     chatwoot_base_url: str = Field(default="", alias="CHATWOOT_BASE_URL")
     chatwoot_api_token: str = Field(default="", alias="CHATWOOT_API_TOKEN")
     chatwoot_account_id: str = Field(default="", alias="CHATWOOT_ACCOUNT_ID")
+    # The agent bot's "Webhook Secret" (Chatwoot > Settings > Bots). Chatwoot signs each
+    # webhook call with it; without it every call is rejected.
+    chatwoot_webhook_secret: str = Field(default="", alias="CHATWOOT_WEBHOOK_SECRET")
     # Escalation assignment — set one of these (agent preferred over team):
     # CHATWOOT_HUMAN_AGENT_ID  — individual agent ID (use when no teams, single-agent setup)
     # CHATWOOT_HUMAN_TEAM_ID   — team ID (use when Chatwoot teams are configured)

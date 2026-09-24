@@ -1,18 +1,32 @@
-"""FastAPI webhook — receives Chatwoot/WhatsApp events, runs ADK agent, delivers replies."""
+"""FastAPI webhook — receives Chatwoot agent-bot events, runs the ADK agent, delivers replies.
+
+Chatwoot waits about 5 s for the webhook response. A slower response or an error opens the
+pending chat for officers ("marked open by system due to an error with the agent bot").
+So the route checks the signature, keeps only customer messages in chats the bot owns, and
+returns 200 at once. The turn runs in the background, one at a time per conversation, in
+the order the messages arrived.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
+import json
 import logging
-from typing import Any
+import time
+from collections import OrderedDict
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, HTTPException, Request
 
 from apps.clients.chatwoot import chatwoot
 from apps.clients.gcs import download_bytes
-from apps.runner import get_session_state, patch_session_state, run_turn
+from apps.config import settings
+from apps.prompts.khind_prompts import IC_PHOTOS_RECEIVED_LINE
+from apps.runner import ensure_session, patch_session_state, run_turn, session_id_for
 from apps.services.media_delivery import get_initial_media_plan
-from apps.services.product_catalog import get_product_catalog, resolve_product_selection
 
 logger = logging.getLogger(__name__)
 
@@ -20,119 +34,120 @@ router = APIRouter(tags=["webhook"])
 
 # Media goes out before the text reply, but the text never waits longer than this.
 _MEDIA_WAIT_SECONDS = 20.0
-# Strong references so slow media uploads are not garbage-collected mid-flight.
+# Chatwoot signs "<timestamp>.<body>". A timestamp further off than this is refused, so an
+# old signed request cannot be sent again later.
+_SIGNATURE_MAX_AGE_SECONDS = 300
+# Message IDs already accepted, so a repeated delivery runs no second turn.
+_SEEN_MESSAGE_LIMIT = 1000
+# Photos after a complete application go to an officer with this label.
+IC_PHOTOS_LABEL = "human-required"
+
+# Strong references so background work is not garbage-collected mid-flight.
 _background_tasks: set[asyncio.Task] = set()
+_seen_message_ids: OrderedDict[Any, None] = OrderedDict()
+# One lock per conversation that has a turn running or waiting; removed when idle.
+_conversation_locks: dict[str, asyncio.Lock] = {}
+_conversation_waiting: dict[str, int] = {}
+
+
+@dataclass(frozen=True)
+class CustomerMessage:
+    id: Any
+    conversation_id: str
+    text: str
+    has_image: bool
 
 
 # ---------------------------------------------------------------------------
-# Payload extraction helpers
+# Request checks
 # ---------------------------------------------------------------------------
 
-def _safe_text(value: Any) -> str:
-    """Recursively extract a plain string from any nested value."""
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, list):
-        return " ".join(_safe_text(v) for v in value if _safe_text(v))
-    if isinstance(value, dict):
-        for key in ("text", "body", "content", "message"):
-            if key in value:
-                return _safe_text(value[key])
-    return str(value).strip()
+def _signature_ok(body: bytes, timestamp: str | None, signature: str | None) -> bool:
+    """Check X-Chatwoot-Signature: "sha256=" + HMAC-SHA256(secret, "<timestamp>.<body>").
 
-
-def _extract_inbound_text(payload: dict[str, Any]) -> str:
-    """Return the customer's message text from a Chatwoot webhook payload."""
-    if not isinstance(payload, dict):
-        return ""
-    for key in ("content", "message", "text", "body", "message_text"):
-        text = _safe_text(payload.get(key))
-        if text:
-            return text
-    for key in ("messages", "events"):
-        items = payload.get(key)
-        if isinstance(items, list):
-            for item in items:
-                text = _extract_inbound_text(item)
-                if text:
-                    return text
-    return ""
-
-
-def _extract_conversation_id(payload: dict[str, Any]) -> str:
-    """Return the Chatwoot conversation ID used for sending outbound replies."""
-    if not isinstance(payload, dict):
-        return ""
-    conv = payload.get("conversation")
-    if isinstance(conv, dict):
-        cid = conv.get("id")
-        if cid:
-            return str(cid)
-    value = payload.get("conversation_id")
-    return str(value) if value else ""
-
-
-def _extract_session_id(payload: dict[str, Any]) -> str:
-    """Return a stable per-customer session key.
-
-    Prefers conversation ID so each Chatwoot conversation is fully isolated.
-    Returns empty string if no stable ID can be found — callers must discard
-    the event rather than falling back to a shared default session.
+    The secret is the agent bot's Webhook Secret. With no secret set, every call fails.
     """
-    if not isinstance(payload, dict):
-        return ""
-
-    conv = payload.get("conversation")
-    if isinstance(conv, dict) and conv.get("id"):
-        return f"conv_{conv['id']}"
-
-    for key in ("session_id", "conversation_id", "customer_id", "contact_id", "sender_id"):
-        value = payload.get(key)
-        if value:
-            return str(value)
-
-    sender = payload.get("sender") or {}
-    if isinstance(sender, dict):
-        for key in ("id", "phone_number", "wa_id"):
-            value = sender.get(key)
-            if value:
-                return str(value)
-
-    return ""
+    secret = settings.chatwoot_webhook_secret
+    if not secret or not timestamp or not signature:
+        return False
+    try:
+        age = abs(time.time() - int(timestamp))
+    except ValueError:
+        return False
+    if age > _SIGNATURE_MAX_AGE_SECONDS:
+        return False
+    digest = hmac.new(secret.encode(), timestamp.encode() + b"." + body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(f"sha256={digest}", signature)
 
 
-def _extract_list_row(payload: dict[str, Any]) -> str | None:
-    """Return the product row ID from a WhatsApp interactive list reply, or None."""
-    if not isinstance(payload, dict):
+def _customer_message(payload: Any) -> CustomerMessage | None:
+    """Return the customer's message, or None for every event the bot must not answer.
+
+    The agent bot receives every message event of its inbox: its own replies and the
+    officers' (outgoing), private notes, WhatsApp delivered/read updates (message_updated),
+    and messages after a handoff. Only a new, public, incoming message in a chat that is
+    still pending (owned by the bot) gets a reply.
+    """
+    if not isinstance(payload, dict) or payload.get("event") != "message_created":
         return None
+    if payload.get("message_type") != "incoming" or payload.get("private"):
+        return None
+    conversation = payload.get("conversation")
+    if not isinstance(conversation, dict) or conversation.get("status") != "pending":
+        return None
+    conversation_id = conversation.get("id")
+    if not conversation_id:
+        return None
+    content = payload.get("content")
+    text = content.strip() if isinstance(content, str) else ""
+    attachments = payload.get("attachments") or []
+    has_image = any(isinstance(a, dict) and a.get("file_type") == "image" for a in attachments)
+    if not text and not has_image:
+        return None
+    return CustomerMessage(payload.get("id"), str(conversation_id), text, has_image)
 
-    # Chatwoot standard: content_attributes.item.id
-    content_attrs = payload.get("content_attributes") or {}
-    if isinstance(content_attrs, dict):
-        item = content_attrs.get("item") or {}
-        if isinstance(item, dict):
-            row_id = item.get("id") or item.get("reply_id") or item.get("value")
-            if row_id:
-                return str(row_id)
 
-    for key in ("selected_row", "row_id", "product_id"):
-        value = payload.get(key)
-        if value:
-            return str(value)
+def _seen_before(message_id: Any) -> bool:
+    """Record the message ID; True if it was already accepted."""
+    if message_id is None:
+        return False
+    if message_id in _seen_message_ids:
+        return True
+    _seen_message_ids[message_id] = None
+    if len(_seen_message_ids) > _SEEN_MESSAGE_LIMIT:
+        _seen_message_ids.popitem(last=False)
+    return False
 
-    # list_reply may be a dict {"id": "prod_xxx"} or a plain string
-    list_reply = payload.get("list_reply")
-    if isinstance(list_reply, dict):
-        row_id = list_reply.get("id") or list_reply.get("reply_id")
-        if row_id:
-            return str(row_id)
-    if isinstance(list_reply, str) and list_reply:
-        return list_reply
 
-    return None
+# ---------------------------------------------------------------------------
+# Background work
+# ---------------------------------------------------------------------------
 
+def _on_task_done(task: asyncio.Task) -> None:
+    _background_tasks.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.error("Webhook background task failed", exc_info=task.exception())
+
+
+def _track(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_on_task_done)
+    return task
+
+
+async def _in_order(conversation_id: str, handle: Callable[[], Awaitable[None]]) -> None:
+    """Run handle() after the earlier messages of this conversation (asyncio.Lock is FIFO)."""
+    lock = _conversation_locks.setdefault(conversation_id, asyncio.Lock())
+    _conversation_waiting[conversation_id] = _conversation_waiting.get(conversation_id, 0) + 1
+    try:
+        async with lock:
+            await handle()
+    finally:
+        _conversation_waiting[conversation_id] -= 1
+        if not _conversation_waiting[conversation_id]:
+            del _conversation_waiting[conversation_id]
+            del _conversation_locks[conversation_id]
 
 
 # ---------------------------------------------------------------------------
@@ -147,18 +162,17 @@ async def _deliver_media(
 ) -> None:
     """Send initial product media (2 images + 1 video) on first product selection.
 
-    Downloads each file from GCS and uploads to Chatwoot concurrently.
-    Syncs the idempotency flag back into the live session after delivery.
+    Downloads each file from GCS and uploads to Chatwoot concurrently. The product is
+    marked as sent in the session before the uploads start, so it is sent at most once.
     """
-    plan = get_initial_media_plan(product_key, state)
-
-    patch_session_state(
-        session_id,
-        {"initial_media_sent_products": state.get("initial_media_sent_products", [])},
-    )
-
+    plan = await asyncio.to_thread(get_initial_media_plan, product_key, state)
     if plan["status"] not in ("ok", "incomplete") or not plan["media"]:
         return
+
+    await patch_session_state(
+        session_id,
+        {"initial_media_sent_products": state["initial_media_sent_products"]},
+    )
 
     async def _send_one(item: dict[str, Any]) -> None:
         try:
@@ -171,82 +185,64 @@ async def _deliver_media(
     await asyncio.gather(*(_send_one(item) for item in plan["media"]))
 
 
-def _on_media_task_done(task: asyncio.Task) -> None:
-    _background_tasks.discard(task)
-    if not task.cancelled() and task.exception() is not None:
-        logger.error("Media delivery task failed", exc_info=task.exception())
-
-
-def _track(coro) -> asyncio.Task:
-    task = asyncio.create_task(coro)
-    _background_tasks.add(task)
-    task.add_done_callback(_on_media_task_done)
-    return task
-
-
-async def _set_pending_when_done(media_task: asyncio.Task, conversation_id: str) -> None:
-    """Re-apply 'pending' once a late upload finishes, since each API send reopens the chat."""
-    await asyncio.wait({media_task})
-    await chatwoot.set_conversation_pending(conversation_id)
-
-
 async def _deliver_media_before_text(
     conversation_id: str,
     product_key: str,
     state: dict[str, Any],
     session_id: str,
-    keep_pending: bool,
 ) -> None:
     """Start media delivery and wait up to _MEDIA_WAIT_SECONDS before the text is sent.
 
     This gives the sketched order (2 images + 1 video, then USP + location question).
     A slow upload keeps running in the background so the text reply is never held up.
-    keep_pending: the caller will set the conversation to pending after its text; a
-    late upload then sets it again so the bot gate stays active.
-    A turn that handed the chat to an officer gets no media, as it gets no USP.
     """
-    if state.get("escalated"):
-        return
     media_task = _track(_deliver_media(conversation_id, product_key, state, session_id))
-    done, _ = await asyncio.wait({media_task}, timeout=_MEDIA_WAIT_SECONDS)
-    if not done and keep_pending:
-        _track(_set_pending_when_done(media_task, conversation_id))
+    await asyncio.wait({media_task}, timeout=_MEDIA_WAIT_SECONDS)
 
 
-async def _maybe_send_catalog(
-    conversation_id: str,
-    session_id: str,
-) -> None:
-    """Send the product list menu once per session at the discovery stage.
+async def _hand_over_ic_photos(conversation_id: str, session_id: str, state: dict[str, Any]) -> None:
+    """Photos after a complete application: hand the chat to an officer, with no model turn.
 
-    Called before run_turn so the LLM knows the menu has already been sent
-    and won't describe it again in text.
+    The last form message asks for the IC photos, and the model cannot see images.
     """
-    state = get_session_state(session_id)
-    if state.get("catalog_sent"):
-        return
-    if state.get("purchase_stage") == "discovery" and not state.get("product_interest"):
-        catalog = get_product_catalog()
-        await chatwoot.send_product_list(conversation_id, catalog)
-        patch_session_state(session_id, {"catalog_sent": True})
+    await chatwoot.escalate_conversation(conversation_id, IC_PHOTOS_LABEL, state)
+    await chatwoot.send_text(conversation_id, IC_PHOTOS_RECEIVED_LINE)
+    await patch_session_state(session_id, {"escalated": True, "escalation_label": IC_PHOTOS_LABEL})
 
 
-async def _maybe_escalate(conversation_id: str, state: dict[str, Any]) -> None:
-    """Escalate to human if the agent flagged it but the tool didn't act yet.
+async def _handle_message(message: CustomerMessage) -> None:
+    """Answer one customer message: agent turn, media, then the text reply."""
+    conversation_id = message.conversation_id
+    session_id = session_id_for(conversation_id)
+    state = await ensure_session(session_id, conversation_id)
+    # Stored with the customer's message, before the model runs.
+    turn_delta: dict[str, Any] = {}
 
-    The escalation_tool calls chatwoot.escalate_conversation() directly.
-    This function is a safety net for cases where the tool ran without a
-    conversation_id in state (e.g. first message before the ID was stored).
-    """
-    if not state.get("escalated"):
+    if state.get("escalated"):
+        # The chat is pending again after a handoff: an officer gave it back, or it was
+        # resolved and the customer wrote again. The bot resumes the flow. A message that
+        # waited behind the handoff turn still says "pending", so ask Chatwoot for the
+        # status now; if that fails, the payload's status stands.
+        if await chatwoot.get_conversation_status(conversation_id) not in (None, "pending"):
+            return
+        turn_delta.update(escalated=False, escalation_label=None)
+
+    if message.has_image and state.get("application_complete"):
+        await _hand_over_ic_photos(conversation_id, session_id, state)
         return
-    # If tool already handled it (chatwoot_conversation_id was in state at call time),
-    # escalate_conversation was already called — nothing more to do.
-    if state.get("chatwoot_conversation_id"):
+    if not message.text:
         return
-    # Fallback: conversation_id arrived via webhook but wasn't in state yet.
-    label = state.get("escalation_label", "human-required")
-    await chatwoot.escalate_conversation(conversation_id, label, state)
+
+    # The model's greeting carries the product list (PRODUCT_MENU), so the webhook sends none.
+    reply_text, state = await run_turn(session_id, message.text, turn_delta)
+
+    # Media first (a no-op after the first pick of a product), then text. A turn that
+    # handed the chat to an officer gets no media, as it gets no USP.
+    product_key = state.get("product_interest")
+    if product_key and not state.get("escalated"):
+        await _deliver_media_before_text(conversation_id, product_key, state, session_id)
+    if reply_text:
+        await chatwoot.send_text(conversation_id, reply_text)
 
 
 # ---------------------------------------------------------------------------
@@ -260,80 +256,24 @@ async def root() -> dict[str, str]:
 
 @router.post("/webhook")
 async def webhook(request: Request) -> dict[str, str]:
-    """Receive inbound Chatwoot events and drive the KHIND sales conversation."""
-    payload = await request.json()
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="Payload must be a JSON object.")
+    """Check and filter a Chatwoot event, then run the turn in the background."""
+    body = await request.body()
+    if not _signature_ok(
+        body,
+        request.headers.get("X-Chatwoot-Timestamp"),
+        request.headers.get("X-Chatwoot-Signature"),
+    ):
+        logger.warning("Webhook call without a valid Chatwoot signature: rejected.")
+        raise HTTPException(status_code=401, detail="Invalid signature.")
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Body must be JSON.") from None
 
-    session_id = _extract_session_id(payload)
-    if not session_id:
-        # Cannot isolate session — discard rather than risk state corruption.
-        logger.warning("Webhook received payload with no identifiable session ID — discarded.")
-        return {"status": "ok"}
-
-    conversation_id = _extract_conversation_id(payload)
-
-    # Store conversation_id in session state so ADK tools (e.g. escalation_tool)
-    # can call Chatwoot directly without needing to pass it through the LLM.
-    if conversation_id:
-        patch_session_state(session_id, {"chatwoot_conversation_id": conversation_id})
-
-    # ------------------------------------------------------------------
-    # Route A: WhatsApp interactive list reply — deterministic product pick
-    # ------------------------------------------------------------------
-    list_row = _extract_list_row(payload)
-    if list_row:
-        product_key = resolve_product_selection(list_row)
-        if not product_key:
-            # Unknown row ID — discard silently, don't confuse the LLM.
-            return {"status": "ok"}
-
-        synthetic_message = f"[PRODUCT_SELECTED:{product_key}]"
-        reply_text, state = await run_turn(session_id, synthetic_message)
-
-        if conversation_id:
-            # Media first, then text; the pending toggle stays the last API call.
-            await _deliver_media_before_text(
-                conversation_id, product_key, state, session_id, keep_pending=bool(reply_text)
-            )
-            if reply_text:
-                await chatwoot.send_text(conversation_id, reply_text)
-                await chatwoot.set_conversation_pending(conversation_id)
-
-        return {"status": "ok"}
-
-    # ------------------------------------------------------------------
-    # Route B: Regular text message — full LLM turn
-    # ------------------------------------------------------------------
-    message_text = _extract_inbound_text(payload)
-    if not message_text:
-        return {"status": "ok"}
-
-    if conversation_id:
-        # Send catalog BEFORE the agent turn so the LLM knows it was already sent.
-        await _maybe_send_catalog(conversation_id, session_id)
-
-    reply_text, state = await run_turn(session_id, message_text)
-
-    if conversation_id:
-        # Media first (a no-op after the first pick of a product), then text.
-        product_key = state.get("product_interest", "")
-        if product_key:
-            await _deliver_media_before_text(
-                conversation_id,
-                product_key,
-                state,
-                session_id,
-                keep_pending=bool(reply_text),
-            )
-
-        if reply_text:
-            await chatwoot.send_text(conversation_id, reply_text)
-            # Keep bot gate active — Chatwoot toggles to 'open' on every outbound API send,
-            # so this must stay the last send of the turn.
-            if not state.get("escalated"):
-                await chatwoot.set_conversation_pending(conversation_id)
-
-        await _maybe_escalate(conversation_id, state)
-
-    return {"status": "ok"}
+    message = _customer_message(payload)
+    if message is None:
+        return {"status": "ignored"}
+    if _seen_before(message.id):
+        return {"status": "duplicate"}
+    _track(_in_order(message.conversation_id, lambda: _handle_message(message)))
+    return {"status": "accepted"}
