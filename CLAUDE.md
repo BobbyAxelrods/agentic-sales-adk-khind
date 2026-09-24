@@ -140,9 +140,10 @@ no payslip question any more.
   - Rerun 2's 4 failures (B6, B12, D6, E4) are fixed in `e1a3458`. The next commit adds the PDPA
     guard, no media on a handoff turn, and the pick by search (E1). Offline checks and scripted
     real-Gemini chats pass (`handoff/verification/rerun2_fix_run_2026-09-24.txt`).
-  - The tool contract changed, so the next Astra run covers all 62 rows. That run (rerun 3) is the
-    last test, by the user's decision: its failures are recorded here, not fixed, and the PR follows
-    whatever the result. Status and next steps: `handoff/2026-09-24-khind-sales-flow.md`.
+  - Rerun 3 (all 62 rows on `04ec5c7`, 11:07-11:40 MYT) is the last test, by the user's decision:
+    its failures are recorded here, not fixed, and the PR follows whatever the result. Astra
+    reports 62 of 62 Pass; the audit against `session.db` is still to do. Status and next steps:
+    `handoff/2026-09-24-khind-sales-flow.md`.
 
 - The Chatwoot webhook fails on every message under ADK 1.31. `apps/runner.py` calls async session
   methods without `await`, so the first `patch_session_state` raises. Even when awaited,
