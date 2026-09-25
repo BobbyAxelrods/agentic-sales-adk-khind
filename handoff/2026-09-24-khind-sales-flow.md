@@ -8,7 +8,8 @@ Earlier versions of this file are in git history:
 - `93691df`: rerun 3 done, before its audit;
 - `2e4d1a6`: rerun 3 audited, before the Cloud Run plan;
 - `e56ebb6`: the Cloud Run plan, before Phase 1;
-- `bce6f69`: Phase 2 resources created, before this staging-first version.
+- `bce6f69`: Phase 2 resources created, before the staging-first version;
+- `da37817`: the staging-first version, before the 2026-09-25 pre-deploy checks.
 
 Rules, enforcement points, pitfalls and open issues are in `CLAUDE.md`; this file does not repeat
 them.
@@ -32,11 +33,16 @@ gcloud secrets versions add khind-staging-chatwoot-webhook-secret --project prud
 ```
 Paste the value, then Ctrl-D. The value never passes through a chat; the app strips the newline.
 
+**Status on 2026-09-25:** both staging secrets still have 0 versions, so step 3 is not done.
+Steps 1 and 2 cannot be checked from here (the bot token cannot list inboxes).
+
 **Then the agent**, in order:
 
 1. Check the prerequisites without printing any value: each staging secret has 1 version
    (`gcloud secrets versions list <name> --project prudential-poc-484904`), and the branch is
-   `feat/cloud-run` with a clean tree.
+   `feat/cloud-run` with a clean tree. The other pre-deploy checks and the security review passed
+   on 2026-09-25 ("Where things stand"). Do them again only if the code, `.gcloudignore` or IAM
+   changed after that.
 2. **Ask the user to approve the deploy.** It is not approved yet (their decision, 2026-09-24).
    State the cost: about USD 62 a month while it runs, about USD 15 for one test week.
 3. Deploy with the command in "Staging deploy command" (the first build takes about 5 minutes).
@@ -52,8 +58,8 @@ Paste the value, then Ctrl-D. The value never passes through a chat; the app str
 
 - **GitHub** (public repo; keep secrets, customer data, personal paths and other clients' names out
   of commits and PRs):
-  - `feat/linear-sales-flow` (`e56ebb6`) and `feat/cloud-run` (`bce6f69` before this commit) are
-    pushed. **No PR is open yet.**
+  - `feat/linear-sales-flow` (`e56ebb6`) and `feat/cloud-run` (`da37817`) are pushed. **No PR is
+    open yet.**
   - The flow PR: open
     `https://github.com/BobbyAxelrods/agentic-sales-adk-khind/compare/main...feat/linear-sales-flow?expand=1`
     with the title `feat(flow): linear WhatsApp sales flow, smoke test 62 of 62` and the body from
@@ -64,30 +70,62 @@ Paste the value, then Ctrl-D. The value never passes through a chat; the app str
   - Record each PR URL here and in CLAUDE.md "History".
   - `docs/` is the user's and stays untracked.
 - **Code:** Cloud Run Phase 1 and the container are done on `feat/cloud-run` (details below).
-- **GCP:** the approved resources exist. Nothing is deployed, and the staging secrets are empty.
+- **GCP:** the approved resources exist (see "Infra"). Nothing is deployed, and on 2026-09-25 the
+  staging secrets were still empty.
+- **Pre-deploy checks on `da37817` (2026-09-25)**, all passing:
+  - the upload set is 21 files: `Dockerfile`, `.dockerignore`, `requirements.txt`,
+    `constraints.txt` and `apps/`. It has no `.env`, key file or `apps/.adk`, and every tracked
+    file under `apps/` is in it.
+  - the service account has 0 keys and only its 3 grants. Each staging secret grants
+    `secretAccessor` to it only.
+  - both Agent Engines exist with 0 sessions, the RAG corpus is active, the 8 APIs are enabled,
+    and the deployer is a project owner.
+  - `.env` holds both IDs that the deploy command reads, and gcloud 560 accepts every flag.
+- **Security review (2026-09-25):** no findings, on the code diff `main...da37817`. Checked:
+  - the signature check: it fails closed, signs the raw body, uses `compare_digest`, allows ±300 s,
+    and runs before any parsing;
+  - the routes: `/`, `/health` and `/webhook`, plus FastAPI's default `/docs`, `/redoc` and
+    `/openapi.json`, which show only the route schema;
+  - payload values that reach a URL, a path or a parser; tools act only on their own chat;
+  - the logs: no secret, message text or personal data;
+  - the container: non-root, and allow lists for the upload and the image.
 - **Checks on `feat/cloud-run`**, all passing:
   - offline: `unit_checks.py` 158, `session_checks.py` 13, `webhook_checks.py` 43 (it caught all
-    11 deliberate code breaks);
+    11 deliberate code breaks). Run again on 2026-09-25: all pass;
   - online: `session_online.py` 8, with real Gemini turns on `khind-sales-sessions`;
   - end to end: `replay_local.py` 10: the app on a local port, signed calls, a mock Chatwoot, and
     real Gemini, RAG, media and Agent Engine;
   - the container steps, without Docker (no Docker daemon runs in WSL).
 
-## Infra at a glance (project `prudential-poc-484904`, asia-southeast1)
+## Infra (project `prudential-poc-484904`, asia-southeast1; read live on 2026-09-25)
 
-| Resource | Name | Status | Used for |
-|---|---|---|---|
-| Cloud Run (staging) | `khind-sales-agent-staging` | to deploy (needs approval) | The webhook app for the test inbox |
-| Cloud Run (production) | `khind-sales-agent` | after staging passes | The webhook app for the live inbox |
-| Service account | `khind-sales-agent` | exists, no keys | Runtime identity: `aiplatform.user`, `storage.objectViewer` on `khind_2028`, reads the KHIND secrets |
-| Secrets (staging) | `khind-staging-chatwoot-api-token`, `khind-staging-chatwoot-webhook-secret` | exist, **empty** | The test bot's token and Webhook Secret |
-| Secrets (production) | `khind-chatwoot-api-token`, `khind-chatwoot-webhook-secret` | to create | The live bot's values (today in `.env`) |
-| Agent Engine (production) | `khind-sales-sessions`, `5343705675828559872` | exists, 0 sessions | Chat history and state; `.env` points at it |
-| Agent Engine (staging) | `khind-sales-sessions-staging`, `3247842999241015296` | exists, 0 sessions | Test chats, apart from customer data |
-| Already there | bucket `khind_2028`, RAG corpus `khind`, Gemini 2.5 Flash, Artifact Registry `cloud-run-source-deploy`, Cloud Build | exist | Media, product documents, the model, images, builds |
+Nothing is deployed on Cloud Run yet. The times are UTC, from each resource's create time.
 
-Leave the project's other apps alone: their Cloud Run service, Artifact Registry repos, secrets,
-RAG corpora and Agent Engine.
+| Created | Resource | Name | Status | Used for |
+|---|---|---|---|---|
+| 2026-09-11 17:22 | Storage bucket | `khind_2028` (25 objects, 53 MB) | in use | Product images and videos |
+| 2026-09-12 03:09 | RAG corpus | `khind`, `2305843009213693952` (10 files; 2 are old duplicates) | active | The product documents |
+| 2026-09-24 10:45 | Agent Engine (production) | `khind-sales-sessions`, `5343705675828559872` | 0 sessions | Chat history and state; `.env` points at it |
+| 2026-09-24 11:28 | Service account | `khind-sales-agent` | 0 keys | Runtime identity: `aiplatform.user` on the project, `storage.objectViewer` on `khind_2028`, `secretAccessor` on the 2 staging secrets |
+| 2026-09-24 11:28 | Secrets (staging) | `khind-staging-chatwoot-api-token`, `khind-staging-chatwoot-webhook-secret` | **0 versions (empty)** | The test bot's token and Webhook Secret |
+| 2026-09-24 11:28 | Agent Engine (staging) | `khind-sales-sessions-staging`, `3247842999241015296` | 0 sessions | Test chats, apart from customer data |
+| not yet | Cloud Run (staging) | `khind-sales-agent-staging` | needs approval | The webhook app for the test inbox |
+| not yet | Cloud Run (production) | `khind-sales-agent` | after staging passes | The webhook app for the live inbox |
+| not yet | Secrets (production) | `khind-chatwoot-api-token`, `khind-chatwoot-webhook-secret` | to create | The live bot's values (today in `.env`) |
+
+- Shared with the project's other apps: the RAG database (Spanner, Basic tier), the Artifact
+  Registry repo `cloud-run-source-deploy` and Cloud Build. They hold no KHIND image or build yet.
+- Leave the project's other apps alone: their Cloud Run service, Artifact Registry repos, secrets,
+  RAG corpora and Agent Engine.
+- To see what changed, read the Admin Activity audit log. Vertex AI logs a create against the
+  region, not the name, so Agent Engines and RAG corpora need the second command:
+
+```
+gcloud logging read 'logName:"cloudaudit.googleapis.com%2Factivity" AND "khind" AND timestamp>="2026-09-01T00:00:00Z"' \
+  --project prudential-poc-484904 --order asc --format="value(timestamp,protoPayload.methodName,protoPayload.resourceName)"
+gcloud logging read 'logName:"cloudaudit.googleapis.com%2Factivity" AND protoPayload.serviceName="aiplatform.googleapis.com" AND protoPayload.methodName=~"Create|Delete" AND timestamp>="2026-09-01T00:00:00Z"' \
+  --project prudential-poc-484904 --order asc --format="value(timestamp,protoPayload.methodName)"
+```
 
 ## Cost (USD list prices for Singapore, checked 2026-09-24)
 
@@ -257,7 +295,8 @@ CHATWOOT_WEBHOOK_SECRET=khind-staging-chatwoot-webhook-secret:latest"
   next action, use numbered steps, give concrete time and cost figures, and restate where things
   stand.
 - `simple-english`: CLAUDE.md, this file and the Obsidian notes use short, plain English.
-- `security-review`: before the staging service gets its public URL.
+- `security-review`: done on 2026-09-25 (no findings). Run it again if the code changes before
+  the staging service gets its public URL.
 - `handoff`: write the next handoff into this same file.
 
 ## Environment
