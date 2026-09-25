@@ -1,4 +1,4 @@
-# Handoff: KHIND sales agent. Next: deploy staging on Cloud Run
+# Handoff: KHIND sales agent. Next: deploy on Cloud Run (staging, then production)
 
 Earlier versions of this file are in git history:
 - `cc153b1`: the first v2 run;
@@ -9,57 +9,176 @@ Earlier versions of this file are in git history:
 - `2e4d1a6`: rerun 3 audited, before the Cloud Run plan;
 - `e56ebb6`: the Cloud Run plan, before Phase 1;
 - `bce6f69`: Phase 2 resources created, before the staging-first version;
-- `da37817`: the staging-first version, before the 2026-09-25 pre-deploy checks.
+- `da37817`: the staging-first version, before the 2026-09-25 pre-deploy checks;
+- `1bef4df`: the 2026-09-25 checks, before this runbook for a helper.
 
 Rules, enforcement points, pitfalls and open issues are in `CLAUDE.md`; this file does not repeat
 them.
 
-## Next session: deploy staging (start here)
+## Start here: the deploy runbook
 
-**Goal:** `khind-sales-agent-staging` runs on Cloud Run and passes a WhatsApp smoke test on the
-test inbox.
+Anyone can follow this runbook: the owner or a helper, a person or an agent. **The owner** (called
+"the user" in older notes) runs this project, gives access and approves each deploy. The Chatwoot
+steps were checked against the Chatwoot v4.18.0 source (Chatwoot Cloud runs it). The gcloud steps
+were checked with gcloud 560.
 
-**Blocked on the user** (check first; nothing can be deployed before these are done):
+**Goal:** `khind-sales-agent-staging` runs on Cloud Run and passes a WhatsApp smoke test on a test
+inbox. Then `khind-sales-agent` takes over the live bot.
 
-| # | Who | Step | Time |
-|---|---|---|---|
-| 1 | User | Chatwoot: create the test WhatsApp inbox (its own number) | ~15 min |
-| 2 | User | Chatwoot > Settings > Bots: add a bot, e.g. "KHIND Sales Agent (staging)". Any outgoing URL for now. Connect it to the test inbox (inbox settings > Bot Configuration) | ~5 min |
-| 3 | User | Put the bot's access token and Webhook Secret into Secret Manager, in their own terminal (commands below) | ~2 min |
+**Status on 2026-09-25:** the GCP resources exist and pass every pre-deploy check ("Where things
+stand"). Parts A to E are not done: both staging secrets have 0 versions. Nothing is deployed.
+
+**Rules for everyone:**
+- This repo is public. Never commit or paste a token, a secret, customer data or the project
+  number. With the project number, anyone can derive the webhook URLs.
+- Never press **Reset** on a bot's Access Token or Webhook Secret. Reset makes a new value, and the
+  service stops working until Secret Manager has it.
+- Do not change the live inbox or the live bot before "Production". Leave the project's other apps
+  alone (see "Infra").
+- Tests use fictional names, IC numbers and phone numbers only.
+
+### 0. Access and inputs (the owner gives these)
+
+| For | What |
+|---|---|
+| A, B, D, E | Administrator on KHIND's Chatwoot account (the account of the live inbox). Only administrators see the Bots page and a bot's values. |
+| A | A spare SIM or eSIM for the test inbox. It must get the code by SMS or call. Best: a number that was never on WhatsApp. A number on personal WhatsApp: delete that WhatsApp account first. A number on the WhatsApp Business app: only "Quick setup" can connect it. |
+| A | Admin on the Meta business portfolio that will own the test number. |
+| G | A second phone with WhatsApp, as the customer. |
+| C, F, H | The GCP roles below, on project `prudential-poc-484904`. |
+| F | Two Chatwoot IDs (not secrets): the account ID (in the Chatwoot URL, `/app/accounts/<id>/`) and the officer's agent ID. The owner's `.env` has both (`CHATWOOT_ACCOUNT_ID`, `CHATWOOT_HUMAN_AGENT_ID`). |
+| F | `gcloud` and `git`, and this repo on branch `feat/cloud-run`. No `.env`, key file or Docker: Cloud Build builds the image. |
+
+GCP roles for a helper. The owner runs this, with the helper's email:
+
+```
+H=user:helper@example.com; P=prudential-poc-484904
+for r in roles/run.sourceDeveloper roles/run.admin roles/logging.viewer roles/secretmanager.viewer; do
+  gcloud projects add-iam-policy-binding $P --member=$H --role=$r --condition=None
+done
+gcloud iam service-accounts add-iam-policy-binding khind-sales-agent@$P.iam.gserviceaccount.com \
+  --member=$H --role=roles/iam.serviceAccountUser --project $P
+for s in khind-staging-chatwoot-api-token khind-staging-chatwoot-webhook-secret; do
+  gcloud secrets add-iam-policy-binding $s --member=$H --role=roles/secretmanager.secretVersionAdder --project $P
+done
+```
+
+- `run.sourceDeveloper` builds and deploys from source, but it cannot set the service's IAM policy.
+  `run.admin` can, and `--allow-unauthenticated` needs it. Without it the deploy only warns, and
+  Chatwoot gets 403.
+- Service Account User lets the service run as `khind-sales-agent`.
+- For "Production", the helper also needs `roles/secretmanager.admin`, or the owner creates the 2
+  production secrets.
+- Remove the roles after the deploy.
+
+### A. Chatwoot: the test WhatsApp inbox (15–30 min)
+
+1. **Settings → Inboxes → Add Inbox → WhatsApp**.
+2. Under **API Provider**, choose one:
+   - **WhatsApp Business** ("Quick setup with Meta"): the easiest. Log into Meta, choose the
+     business, then add and verify the number. Chatwoot sets up Meta's webhook itself.
+   - **WhatsApp Cloud** (manual), if Quick setup is not offered or fails. The wizard shows these
+     steps:
+     1. In Meta Developers, create an app with the WhatsApp use case. Click **My Meta app is
+        ready**.
+     2. In the app, open **WhatsApp → API Setup → From → Add phone number**. Fill in the business
+        profile and enter the code. Copy the **Phone Number ID** and the **WhatsApp Business
+        Account ID**.
+     3. In Meta Business Settings, open **Users → System users**. Create an admin system user, and
+        give it the app and the WhatsApp Business Account with full control. Click **Generate
+        token**: expiration **Never**, permissions `whatsapp_business_management` and
+        `whatsapp_business_messaging`. Meta shows the token only once.
+     4. Paste the 3 values and click **Verify details**. Name the inbox, for example "KHIND Sales
+        (staging)", and click **Create inbox**. Wait until the 4 checks show **Verified**. If one
+        stays Pending, click **Retry webhook setup**.
+3. Click **Continue to add agents**. Add the owner and **the officer who gets the live handoffs**
+   (`CHATWOOT_HUMAN_AGENT_ID`). A handoff assigns the chat to that officer. An agent who is not an
+   administrator can open a chat only in their own inboxes: the assignment alone is not enough.
+
+### B. Chatwoot: the staging bot (5 min)
+
+1. **Settings → Bots → Add Bot**.
+2. **Bot name:** `KHIND Sales Agent (staging)`. **Webhook URL:**
+   `https://khind-sales-agent-staging-<project number>.asia-southeast1.run.app/webhook`.
+   Get the project number with
+   `gcloud projects describe prudential-poc-484904 --format='value(projectNumber)'`. Cloud Run
+   gives the service this URL at the deploy, so the bot needs no change later.
+3. Click **Create Bot**. The dialog shows the **Access Token** and the **Webhook Secret**. Keep it
+   open for Part C. Later, both are under **Bots →** edit the bot.
+
+### C. Secret Manager: the bot's 2 values (2 min)
+
+Do this in a terminal, never in a chat or a ticket. Run each command, paste the value, press
+Enter, then press Ctrl-D:
 
 ```
 gcloud secrets versions add khind-staging-chatwoot-api-token --project prudential-poc-484904 --data-file=-
 gcloud secrets versions add khind-staging-chatwoot-webhook-secret --project prudential-poc-484904 --data-file=-
 ```
-Paste the value, then Ctrl-D. The value never passes through a chat; the app strips the newline.
 
-**Status on 2026-09-25:** both staging secrets still have 0 versions, so step 3 is not done.
-Steps 1 and 2 cannot be checked from here (the bot token cannot list inboxes).
+The first secret gets the **Access Token**, the second the **Webhook Secret**. Each command prints
+`Created version [1]`. The app strips the trailing newline.
 
-**Then the agent**, in order:
+### D. Chatwoot: connect the bot (1 min)
 
-1. Check the prerequisites without printing any value: each staging secret has 1 version
-   (`gcloud secrets versions list <name> --project prudential-poc-484904`), and the branch is
-   `feat/cloud-run` with a clean tree. The other pre-deploy checks and the security review passed
-   on 2026-09-25 ("Where things stand"). Do them again only if the code, `.gcloudignore` or IAM
+**Settings → Inboxes →** the test inbox **→ Bot Configuration**. Select
+`KHIND Sales Agent (staging)` and click **Update**. New chats in this inbox now start `pending`,
+with the bot in charge.
+
+**Do not message the test number before Part F passes.** Until then, Chatwoot's call to the bot
+fails, and Chatwoot opens the chat for officers.
+
+### E. Chatwoot: labels (2 min, once for the account)
+
+**Settings → Labels.** Make sure these 5 labels exist, and add the missing ones (`not-working` is
+new): `coverage-unsupported-alternative`, `not-working`, `human-required`, `angry-customer`,
+`rag-error`. The handoffs add them, and a label must exist here to show in filters.
+
+### F. Deploy staging (after the owner approves; ~15 min)
+
+1. Check, without printing any value:
+   - each staging secret has 1 version:
+     `gcloud secrets versions list khind-staging-chatwoot-api-token --project prudential-poc-484904`,
+     and the same for `khind-staging-chatwoot-webhook-secret`;
+   - `git status` shows branch `feat/cloud-run` with a clean tree.
+
+   The other pre-deploy checks and the security review passed on 2026-09-25 ("Where things
+   stand"). Do them again only if `apps/`, `Dockerfile`, `.gcloudignore`, the requirements or IAM
    changed after that.
-2. **Ask the user to approve the deploy.** It is not approved yet (their decision, 2026-09-24).
-   State the cost: about USD 62 a month while it runs, about USD 15 for one test week.
-3. Deploy with the command in "Staging deploy command" (the first build takes about 5 minutes).
-4. Check the service before Chatwoot points at it:
-   - `curl <service URL>/health` answers `{"status":"ok"}`;
-   - `curl -X POST <service URL>/webhook -d '{}'` answers 401 (the secret is loaded, and unsigned
-     calls are refused);
-   - the startup log has no "CHATWOOT_WEBHOOK_SECRET is not set" and no traceback.
-5. The user sets the test bot's outgoing URL to `<service URL>/webhook`. Then run the smoke test
-   ("Staging smoke test"). Afterwards, ask the user whether to scale staging to 0 or delete it.
+2. **Get the owner's approval.** Staging costs about USD 62 a month while it runs, about USD 15 for
+   one test week.
+3. Run "Staging deploy command" from the repo root. The first build takes about 5 minutes.
+4. Check the service. Each line shows the expected result:
+
+   ```
+   URL=https://khind-sales-agent-staging-$(gcloud projects describe prudential-poc-484904 --format='value(projectNumber)').asia-southeast1.run.app
+   curl -s $URL/health                                                    # {"status":"ok"}
+   curl -s -o /dev/null -w '%{http_code}\n' -X POST $URL/webhook -d '{}'  # 401
+   gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="khind-sales-agent-staging"' \
+     --project prudential-poc-484904 --freshness 30m --format='value(textPayload)' \
+     | grep -E 'is not set|not configured|Traceback' || echo clean                # clean
+   ```
+
+   The 401 shows that unsigned calls are refused. The call gets 401 also when the secret is
+   missing, so only `clean` shows that the secret is loaded. If `$URL` does not answer, list the
+   service's URLs and correct the bot's Webhook URL:
+   `gcloud run services describe khind-sales-agent-staging --region asia-southeast1 --project prudential-poc-484904 --format="value(metadata.annotations['run.googleapis.com/urls'])"`.
+
+### G. Staging smoke test (~1 hour)
+
+From the second phone, message the test number. Follow "Staging smoke test" below. Afterwards,
+the owner chooses: scale staging to 0, or delete it ("Staging deploy command" has both commands).
+
+### H. Production (after staging passes)
+
+Follow "Production" below.
 
 ## Where things stand (2026-09-25)
 
 - **GitHub** (public repo; keep secrets, customer data, personal paths and other clients' names out
   of commits and PRs):
-  - `feat/linear-sales-flow` (`e56ebb6`) and `feat/cloud-run` (`da37817`) are pushed. **No PR is
-    open yet.**
+  - Both branches are on GitHub: `feat/linear-sales-flow` (`e56ebb6`) and `feat/cloud-run`. The
+    owner pushes. **No PR is open yet.**
   - The flow PR: open
     `https://github.com/BobbyAxelrods/agentic-sales-adk-khind/compare/main...feat/linear-sales-flow?expand=1`
     with the title `feat(flow): linear WhatsApp sales flow, smoke test 62 of 62` and the body from
@@ -147,14 +266,16 @@ gcloud logging read 'logName:"cloudaudit.googleapis.com%2Factivity" AND protoPay
 
 ## Staging deploy command (after approval)
 
-Run from the repo root on `feat/cloud-run`. The two IDs come from `.env` and are not secrets;
-nothing here prints a secret.
+Run from the repo root on `feat/cloud-run`. Nothing here prints a secret. The two Chatwoot IDs are
+not secrets. The command reads them from the owner's `.env`. Without `.env`, set them by hand
+first (Part 0), and the block keeps them.
 
 ```
 PROJECT=prudential-poc-484904
 SA=khind-sales-agent@$PROJECT.iam.gserviceaccount.com
-ACCOUNT_ID=$(grep '^CHATWOOT_ACCOUNT_ID=' .env | cut -d= -f2-)
-OFFICER_ID=$(grep '^CHATWOOT_HUMAN_AGENT_ID=' .env | cut -d= -f2-)
+[ -f .env ] && ACCOUNT_ID=$(grep '^CHATWOOT_ACCOUNT_ID=' .env | cut -d= -f2-)
+[ -f .env ] && OFFICER_ID=$(grep '^CHATWOOT_HUMAN_AGENT_ID=' .env | cut -d= -f2-)
+if [ -z "$ACCOUNT_ID" ] || [ -z "$OFFICER_ID" ]; then echo "Set ACCOUNT_ID and OFFICER_ID first"; else
 gcloud run deploy khind-sales-agent-staging --source . --region asia-southeast1 --project $PROJECT \
   --service-account $SA --allow-unauthenticated --quiet \
   --min-instances 1 --max-instances 1 --no-cpu-throttling --cpu 1 --memory 1Gi --timeout 60 \
@@ -167,6 +288,7 @@ CHATWOOT_BASE_URL=https://app.chatwoot.com,CHATWOOT_ACCOUNT_ID=$ACCOUNT_ID,\
 CHATWOOT_HUMAN_AGENT_ID=$OFFICER_ID" \
   --set-secrets "CHATWOOT_API_TOKEN=khind-staging-chatwoot-api-token:latest,\
 CHATWOOT_WEBHOOK_SECRET=khind-staging-chatwoot-webhook-secret:latest"
+fi
 ```
 
 - `--allow-unauthenticated`: Chatwoot cannot send Google identity tokens. The signature check is
@@ -184,6 +306,11 @@ CHATWOOT_WEBHOOK_SECRET=khind-staging-chatwoot-webhook-secret:latest"
 
 ## Staging smoke test (WhatsApp, test inbox)
 
+Send the messages from the second phone. The IDs are rows of
+`handoff/smoke-test/KHIND_Agent_Smoke_Test_Prompts_v2.csv`: each row has the message, its
+precondition and the expected reply. The rows were written for ADK Web, but the messages are the
+same on WhatsApp. Watch the chat in Chatwoot at the same time.
+
 1. The happy path (A1 to A11). On the first pick, 2 images and 1 video arrive before the text.
 2. The handoffs: an uncovered area (B2), not working (F3) and a request for a human (F1). After
    each: the chat is open, the label is added next to any existing ones, the note and the
@@ -198,14 +325,29 @@ CHATWOOT_WEBHOOK_SECRET=khind-staging-chatwoot-webhook-secret:latest"
 
 ## Production (after staging passes)
 
-1. Create `khind-chatwoot-api-token` and `khind-chatwoot-webhook-secret` (same commands as the
-   staging secrets). The user adds the live bot's values.
-2. Deploy `khind-sales-agent` with the same command. Change these: the service name,
-   `env=production`, `VERTEX_AI_AGENT_ENGINE_ID=5343705675828559872`, and the production secrets.
-3. Check it the same way, then switch the live bot's outgoing URL.
-4. Rollback: point the bot back, or
-   `gcloud run services update-traffic khind-sales-agent --to-revisions <previous>=100`.
-5. Then Phase 4: alerts on the 5xx rate, "ADK runner failed" and "Webhook background task
+1. Create the 2 production secrets, like the staging ones, and let the service account read them:
+
+   ```
+   P=prudential-poc-484904; SA=khind-sales-agent@$P.iam.gserviceaccount.com
+   for s in khind-chatwoot-api-token khind-chatwoot-webhook-secret; do
+     gcloud secrets create $s --project $P --replication-policy=user-managed \
+       --locations=asia-southeast1 --labels=app=khind-sales-agent,env=production
+     gcloud secrets add-iam-policy-binding $s --project $P \
+       --member=serviceAccount:$SA --role=roles/secretmanager.secretAccessor
+   done
+   ```
+
+2. Add the **live** bot's Access Token and Webhook Secret, as in Part C, to these 2 secrets. They
+   are in Chatwoot, **Settings → Bots →** edit the live bot. Never press Reset on the live bot.
+3. **Get the owner's approval** (about USD 62 a month). Deploy `khind-sales-agent` with the staging
+   command. Change these: the service name, `env=production`,
+   `VERTEX_AI_AGENT_ENGINE_ID=5343705675828559872`, and the 2 production secret names.
+4. Check it as in Part F, with `khind-sales-agent` in the URL and in the log filter.
+5. Write down the live bot's current Webhook URL: it is the rollback. Then set it to
+   `https://khind-sales-agent-<project number>.asia-southeast1.run.app/webhook`.
+6. Rollback: put the old URL back on the live bot, or
+   `gcloud run services update-traffic khind-sales-agent --to-revisions <previous>=100 --region asia-southeast1 --project prudential-poc-484904`.
+7. Then Phase 4: alerts on the 5xx rate, "ADK runner failed" and "Webhook background task
    failed", and a budget alert.
 
 ## User decisions (2026-09-24)
@@ -217,7 +359,7 @@ CHATWOOT_WEBHOOK_SECRET=khind-staging-chatwoot-webhook-secret:latest"
     named before belongs to another app: leave it alone.
   - **D3:** check Chatwoot's signature (Chatwoot v4.18.0 signs agent-bot calls).
   - **D4:** staging uses a separate test inbox with its own WhatsApp number and agent bot. The
-    user sets it up.
+    owner or a helper sets it up (runbook Parts A to E).
   - After a handoff, a chat that is pending again resumes the flow.
   - The Phase 2 resources: approved and created.
   - Staging keeps its sessions in its own engine, `khind-sales-sessions-staging`.
@@ -254,7 +396,7 @@ CHATWOOT_WEBHOOK_SECRET=khind-staging-chatwoot-webhook-secret:latest"
 
 ## Before go-live, outside the code (KHIND or the team)
 
-- Create the `not-working` label in Chatwoot.
+- Create the `not-working` label in Chatwoot (runbook Part E).
 - Approve `IC_PHOTOS_RECEIVED_LINE`, and choose a label for IC photos if `human-required` is too
   broad.
 - Set a retention time for sessions (PDPA). Agent Engine sessions accept a TTL.
@@ -299,7 +441,9 @@ CHATWOOT_WEBHOOK_SECRET=khind-staging-chatwoot-webhook-secret:latest"
   the staging service gets its public URL.
 - `handoff`: write the next handoff into this same file.
 
-## Environment
+## Environment (the owner's machine)
+
+A helper who only deploys needs none of this: see runbook Part 0.
 
 - WSL2 (`Ubuntu-22.04`), `.venv` with Python 3.12, `google-adk==1.31.0`, and `gemini-2.5-flash`
   with a thinking budget of 1024. `uv` is installed. `openpyxl` is not in `.venv`; use

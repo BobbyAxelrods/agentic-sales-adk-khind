@@ -2,7 +2,8 @@
 
 Google ADK 1.31 agent (`apps/agent.py`, Gemini 2.5 Flash on Vertex AI) behind a FastAPI
 Chatwoot webhook (`apps/main.py`, `apps/webhook.py`), built for Cloud Run (`Dockerfile`; not
-deployed yet). There is no test suite yet. Check scripts
+deployed yet). The deploy runbook, with the Chatwoot setup, is the "Start here" section of
+`handoff/2026-09-24-khind-sales-flow.md`. There is no test suite yet. Check scripts
 from the 2026-09-24 session live in `handoff/verification/`. The ADK Web smoke-test package for
 Astra computer use (62 cases, v2) lives in `handoff/smoke-test/`. The previous run (v1, 2026-09-20)
 is in `/mnt/d/Obsidian_folder/Personal/Personal/Khind Test/`.
@@ -152,10 +153,24 @@ no payslip question any more.
   pending after a reply: that takes the chat from an officer.
 - `POST .../labels` replaces all of a chat's labels. The bot token may call only messages,
   `toggle_status`, conversation `show`, labels and assignments.
+- A new agent bot: Settings > Bots (administrators only). Its Access Token and Webhook Secret show
+  after Create Bot and later under edit. Reset makes a new value, and the service stops working
+  until Secret Manager has it. The inbox's Bot Configuration tab connects a bot.
+- In an inbox with a bot, a new chat starts `pending` with the bot as its assignee. Auto-assignment
+  runs only when a chat opens. A handoff can assign any agent of the account, but an agent who is
+  not an administrator can open only the chats of their own inboxes: add the officer to the bot's
+  inbox.
 - A WhatsApp list reply reaches the bot as plain text (the row title): Chatwoot drops the row ID.
 - Agent Engine session IDs allow only `[a-z0-9-]` and must start with a letter. `get_session`
   loads every event; `GetSessionConfig(num_recent_events=0)` reads only the state.
 - The per-chat turn lock is in process memory, so run one Cloud Run instance (`--max-instances 1`).
+- Cloud Run gives each service a fixed URL,
+  `https://<service>-<project number>.asia-southeast1.run.app`, so a bot's Webhook URL can be set
+  before the deploy. Keep the project number out of this public repo;
+  `gcloud projects describe prudential-poc-484904 --format='value(projectNumber)'` prints it.
+- A deploy from source with `--allow-unauthenticated` needs `roles/run.sourceDeveloper` and
+  `roles/run.admin`, plus Service Account User on `khind-sales-agent`. Only `run.admin` can set the
+  service's IAM policy: without it the deploy only warns, and Chatwoot gets 403.
 - The RAG corpora use RagManagedDb: one Spanner instance per project and region (Basic tier, about
   USD 103 a month). All 6 corpora in asia-southeast1 share it, and 5 of them belong to other apps.
   Setting the tier to Unprovisioned deletes every corpus in the region.
@@ -185,9 +200,10 @@ no payslip question any more.
     - C6 ("12", new session) said "senarai produk kami" without showing the list. The "senarai"
       rule in the prompt covers only items outside the 8 products.
 
-- Cloud Run is not deployed yet. Next: staging (`handoff/2026-09-24-khind-sales-flow.md`, "Next
-  session"). It waits for the user's test inbox, its agent bot, and the bot's token and Webhook
-  Secret in Secret Manager, and then for the user's approval.
+- Cloud Run is not deployed yet. The runbook, for the owner or a helper, is the "Start here"
+  section of `handoff/2026-09-24-khind-sales-flow.md`: the Chatwoot test inbox, its bot and the
+  labels, the bot's 2 values in Secret Manager, the owner's approval, the deploy and its checks,
+  the smoke test, then production. On 2026-09-25 the staging secrets were still empty.
 - `IC_PHOTOS_RECEIVED_LINE` is new customer text: it needs the user's (or KHIND's) approval.
 - Sessions never expire. They hold names, IC and phone numbers, so KHIND must set a retention time
   (Agent Engine sessions accept a TTL).
@@ -208,7 +224,8 @@ no payslip question any more.
 - In the form step the model lists the missing fields in the form layout, although the rule says
   not to resend the form. It did not happen in rerun 3. (Its name echo is now removed by
   `strip_personal_values`.)
-- The `not-working` label must be created in Chatwoot so these handoffs show in filters.
+- The `not-working` label must be created in Chatwoot so these handoffs show in filters (runbook
+  Part E).
 - A question with no product named and none active (for example "ada promosi?" at discovery)
   still searches the whole corpus.
 - `KHIND_MASTERPROMPT.md` and `TASK_TRACKER.md` still describe the old flow.
@@ -255,3 +272,7 @@ no payslip question any more.
   The cost estimate (list prices) is in the handoff: about USD 62 a month per always-on service and
   about 3 US cents per full sales chat.
 - 2026-09-25: both branches are pushed; no PR is open yet. Next: the staging deploy.
+- 2026-09-25 (later): the pre-deploy checks passed, and a security review of
+  `main...feat/cloud-run` found nothing. The infra was read live (the handoff's "Infra"). The
+  Chatwoot setup was checked against the v4.18.0 source. The handoff now starts with a runbook
+  that a helper can follow, from the Chatwoot test inbox to production.
