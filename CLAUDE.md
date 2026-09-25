@@ -156,6 +156,9 @@ no payslip question any more.
 - Agent Engine session IDs allow only `[a-z0-9-]` and must start with a letter. `get_session`
   loads every event; `GetSessionConfig(num_recent_events=0)` reads only the state.
 - The per-chat turn lock is in process memory, so run one Cloud Run instance (`--max-instances 1`).
+- The RAG corpora use RagManagedDb: one Spanner instance per project and region (Basic tier, about
+  USD 103 a month). All 6 corpora in asia-southeast1 share it, and 5 of them belong to other apps.
+  Setting the tier to Unprovisioned deletes every corpus in the region.
 - To run the webhook app locally, use `handoff/verification/replay_local.py` (the app and a mock
   Chatwoot). Do not start `uvicorn apps.main:app` with the `.env` Chatwoot values: they belong to
   the live bot, so replies would reach real chats.
@@ -182,8 +185,9 @@ no payslip question any more.
     - C6 ("12", new session) said "senarai produk kami" without showing the list. The "senarai"
       rule in the prompt covers only items outside the 8 products.
 
-- Cloud Run is not deployed yet. The plan and its state are in
-  `handoff/2026-09-24-khind-sales-flow.md`. Staging needs a test inbox with its own agent bot.
+- Cloud Run is not deployed yet. Next: staging (`handoff/2026-09-24-khind-sales-flow.md`, "Next
+  session"). It waits for the user's test inbox, its agent bot, and the bot's token and Webhook
+  Secret in Secret Manager, and then for the user's approval.
 - `IC_PHOTOS_RECEIVED_LINE` is new customer text: it needs the user's (or KHIND's) approval.
 - Sessions never expire. They hold names, IC and phone numbers, so KHIND must set a retention time
   (Agent Engine sessions accept a TTL).
@@ -243,3 +247,11 @@ no payslip question any more.
   signed calls, the event filter, background turns and durable sessions. The checks are
   `session_checks.py`, `webhook_checks.py`, `session_online.py` and `replay_local.py` in
   `handoff/verification/`. Nothing is deployed.
+- 2026-09-24 (Cloud Run Phase 2). Created with the user's approval, in asia-southeast1:
+  - the runtime service account `khind-sales-agent`, with no key;
+  - two staging secrets, still empty;
+  - the staging Agent Engine `khind-sales-sessions-staging`.
+
+  The cost estimate (list prices) is in the handoff: about USD 62 a month per always-on service and
+  about 3 US cents per full sales chat.
+- 2026-09-25: both branches are pushed; no PR is open yet. Next: the staging deploy.

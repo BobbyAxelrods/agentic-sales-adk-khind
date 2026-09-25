@@ -1,4 +1,4 @@
-# Handoff: KHIND sales agent. Next: GCP setup and the staging deploy on Cloud Run
+# Handoff: KHIND sales agent. Next: deploy staging on Cloud Run
 
 Earlier versions of this file are in git history:
 - `cc153b1`: the first v2 run;
@@ -7,195 +7,214 @@ Earlier versions of this file are in git history:
 - `5be9410`: before rerun 3;
 - `93691df`: rerun 3 done, before its audit;
 - `2e4d1a6`: rerun 3 audited, before the Cloud Run plan;
-- `e56ebb6`: the Cloud Run plan, before Phase 1.
+- `e56ebb6`: the Cloud Run plan, before Phase 1;
+- `bce6f69`: Phase 2 resources created, before this staging-first version.
 
 Rules, enforcement points, pitfalls and open issues are in `CLAUDE.md`; this file does not repeat
 them.
 
-## Where things stand (2026-09-24, 19:20 MYT)
+## Next session: deploy staging (start here)
 
-- **Branches** (nothing is pushed yet; the remote has only `main`):
-  - `feat/linear-sales-flow` at `e56ebb6`, 11 commits ahead of `main`: the linear flow and the
-    smoke tests. Its PR is ready (see "Next steps", step 1).
-  - `feat/cloud-run`, based on `feat/linear-sales-flow`: the Cloud Run work below.
+**Goal:** `khind-sales-agent-staging` runs on Cloud Run and passes a WhatsApp smoke test on the
+test inbox.
+
+**Blocked on the user** (check first; nothing can be deployed before these are done):
+
+| # | Who | Step | Time |
+|---|---|---|---|
+| 1 | User | Chatwoot: create the test WhatsApp inbox (its own number) | ~15 min |
+| 2 | User | Chatwoot > Settings > Bots: add a bot, e.g. "KHIND Sales Agent (staging)". Any outgoing URL for now. Connect it to the test inbox (inbox settings > Bot Configuration) | ~5 min |
+| 3 | User | Put the bot's access token and Webhook Secret into Secret Manager, in their own terminal (commands below) | ~2 min |
+
+```
+gcloud secrets versions add khind-staging-chatwoot-api-token --project prudential-poc-484904 --data-file=-
+gcloud secrets versions add khind-staging-chatwoot-webhook-secret --project prudential-poc-484904 --data-file=-
+```
+Paste the value, then Ctrl-D. The value never passes through a chat; the app strips the newline.
+
+**Then the agent**, in order:
+
+1. Check the prerequisites without printing any value: each staging secret has 1 version
+   (`gcloud secrets versions list <name> --project prudential-poc-484904`), and the branch is
+   `feat/cloud-run` with a clean tree.
+2. **Ask the user to approve the deploy.** It is not approved yet (their decision, 2026-09-24).
+   State the cost: about USD 62 a month while it runs, about USD 15 for one test week.
+3. Deploy with the command in "Staging deploy command" (the first build takes about 5 minutes).
+4. Check the service before Chatwoot points at it:
+   - `curl <service URL>/health` answers `{"status":"ok"}`;
+   - `curl -X POST <service URL>/webhook -d '{}'` answers 401 (the secret is loaded, and unsigned
+     calls are refused);
+   - the startup log has no "CHATWOOT_WEBHOOK_SECRET is not set" and no traceback.
+5. The user sets the test bot's outgoing URL to `<service URL>/webhook`. Then run the smoke test
+   ("Staging smoke test"). Afterwards, ask the user whether to scale staging to 0 or delete it.
+
+## Where things stand (2026-09-25)
+
+- **GitHub** (public repo; keep secrets, customer data, personal paths and other clients' names out
+  of commits and PRs):
+  - `feat/linear-sales-flow` (`e56ebb6`) and `feat/cloud-run` (`bce6f69` before this commit) are
+    pushed. **No PR is open yet.**
+  - The flow PR: open
+    `https://github.com/BobbyAxelrods/agentic-sales-adk-khind/compare/main...feat/linear-sales-flow?expand=1`
+    with the title `feat(flow): linear WhatsApp sales flow, smoke test 62 of 62` and the body from
+    `handoff/2026-09-24-pr-description.md`.
+  - The Cloud Run PR: after the flow PR is merged, from `feat/cloud-run`, with the title
+    `feat(deploy): Cloud Run-ready Chatwoot webhook` and the body from
+    `handoff/2026-09-24-pr-cloud-run.md`.
+  - Record each PR URL here and in CLAUDE.md "History".
   - `docs/` is the user's and stays untracked.
-- **The GitHub repo is public** (the GitHub API says `"private": false`). Keep secrets, customer
-  data, personal paths and other clients' names out of commits, deploy files and PRs.
-- **Cloud Run Phase 1 (code) and Phase 2 are done.** The code is on `feat/cloud-run`. The GCP
-  resources the user approved exist (see Phase 2). Nothing is deployed.
+- **Code:** Cloud Run Phase 1 and the container are done on `feat/cloud-run` (details below).
+- **GCP:** the approved resources exist. Nothing is deployed, and the staging secrets are empty.
 - **Checks on `feat/cloud-run`**, all passing:
-  - offline: `unit_checks.py` 158, `session_checks.py` 13, `webhook_checks.py` 43. The webhook checks
-    caught all 11 deliberate code breaks (a mutation test);
-  - online: `session_online.py` 8 (two real Gemini turns on `khind-sales-sessions`);
-  - end to end: `replay_local.py` 10 (the app on a local port, signed calls, a mock Chatwoot, real
-    Gemini, RAG, GCS media and Agent Engine);
-  - the container, checked without Docker (no Docker daemon runs in WSL): a clean Python 3.12 env
-    from `requirements.txt` and `constraints.txt`, started from a folder that holds only `apps/`.
+  - offline: `unit_checks.py` 158, `session_checks.py` 13, `webhook_checks.py` 43 (it caught all
+    11 deliberate code breaks);
+  - online: `session_online.py` 8, with real Gemini turns on `khind-sales-sessions`;
+  - end to end: `replay_local.py` 10: the app on a local port, signed calls, a mock Chatwoot, and
+    real Gemini, RAG, media and Agent Engine;
+  - the container steps, without Docker (no Docker daemon runs in WSL).
 
-## User decisions (2026-09-24)
+## Infra at a glance (project `prudential-poc-484904`, asia-southeast1)
 
-- Rerun 3 was the last smoke test. Its findings are open issues, not fixes in the flow PR.
-- Push `feat/linear-sales-flow` and open a PR to `main` (approved).
-- Cloud Run:
-  - **D1:** stay in `prudential-poc-484904`.
-  - **D2:** a new Agent Engine for KHIND sessions. Created: `khind-sales-sessions`, ID
-    `5343705675828559872`, asia-southeast1. `.env` points at it. The engine that `.env` named
-    before belongs to another app: leave it alone.
-  - **D3:** check Chatwoot's signature. This was the plan's own rule, because Chatwoot v4.18.0 signs
-    agent-bot calls with the bot's Webhook Secret.
-  - **D4:** staging uses a separate test inbox (with its own WhatsApp number and agent bot). The user
-    sets it up; it does not exist yet.
-  - After a handoff, a chat that is pending again resumes the flow.
-  - The Phase 2 GCP resources: approved and created.
-  - Staging keeps its sessions in its own engine, `khind-sales-sessions-staging`.
-  - Staging handoffs are assigned to the same officer as in `.env` (`CHATWOOT_HUMAN_AGENT_ID`).
-  - **The staging deploy is not approved yet:** ask the user again before it.
+| Resource | Name | Status | Used for |
+|---|---|---|---|
+| Cloud Run (staging) | `khind-sales-agent-staging` | to deploy (needs approval) | The webhook app for the test inbox |
+| Cloud Run (production) | `khind-sales-agent` | after staging passes | The webhook app for the live inbox |
+| Service account | `khind-sales-agent` | exists, no keys | Runtime identity: `aiplatform.user`, `storage.objectViewer` on `khind_2028`, reads the KHIND secrets |
+| Secrets (staging) | `khind-staging-chatwoot-api-token`, `khind-staging-chatwoot-webhook-secret` | exist, **empty** | The test bot's token and Webhook Secret |
+| Secrets (production) | `khind-chatwoot-api-token`, `khind-chatwoot-webhook-secret` | to create | The live bot's values (today in `.env`) |
+| Agent Engine (production) | `khind-sales-sessions`, `5343705675828559872` | exists, 0 sessions | Chat history and state; `.env` points at it |
+| Agent Engine (staging) | `khind-sales-sessions-staging`, `3247842999241015296` | exists, 0 sessions | Test chats, apart from customer data |
+| Already there | bucket `khind_2028`, RAG corpus `khind`, Gemini 2.5 Flash, Artifact Registry `cloud-run-source-deploy`, Cloud Build | exist | Media, product documents, the model, images, builds |
 
-## Next steps, in order
+Leave the project's other apps alone: their Cloud Run service, Artifact Registry repos, secrets,
+RAG corpora and Agent Engine.
 
-1. **PR for the flow.** The user runs `git push -u origin feat/linear-sales-flow` in their own
-   terminal (WSL git has no credentials; `gh` is not installed). Then they open
-   `https://github.com/BobbyAxelrods/agentic-sales-adk-khind/compare/main...feat/linear-sales-flow?expand=1`
-   with the title `feat(flow): linear WhatsApp sales flow, smoke test 62 of 62` and the body from
-   `handoff/2026-09-24-pr-description.md`. Record the PR URL here and in CLAUDE.md "History".
-2. **Push `feat/cloud-run`** too (same way). Open its PR after the flow PR is merged, so its diff
-   shows only the Cloud Run work. Title: `feat(deploy): Cloud Run-ready Chatwoot webhook`; body:
-   `handoff/2026-09-24-pr-cloud-run.md`.
-3. **The user sets up staging in Chatwoot** (Phase 3, "Before the deploy"): the test inbox, an
-   agent bot connected to it, and the bot's access token and Webhook Secret in Secret Manager.
-4. **Ask the user to approve the staging deploy**, then deploy (Phase 3). Set the test bot's
-   outgoing URL, then run the WhatsApp smoke test.
-5. **Production:** the same steps with the live bot's secrets, then switch the live bot's URL.
+## Cost (USD list prices for Singapore, checked 2026-09-24)
 
-## Plan: publish the agent to Cloud Run
+| Item | Cost |
+|---|---|
+| KHIND's own resources today | ~$0 a month |
+| The shared RAG database (Spanner, Basic tier, 6 corpora of which 5 are other apps') | ~$103 a month, already billing |
+| One always-on Cloud Run service (1 vCPU, 1 GiB, CPU always on) | ~$62 a month; ~$15 for one test week |
+| Gemini per full 12-turn sales chat (measured: 138K input tokens, half cached; 2.1K output) | ~$0.03 |
+| Media per product pick (~6 MB sent to Chatwoot) | ~$0.001 |
+| Secrets, images, logs, sessions storage, bucket | ~$1 a month together |
 
-The target is the Chatwoot webhook app (`apps/main.py`, FastAPI, `POST /webhook`), called by the
-Chatwoot agent bot of the inbox. ADK Web is a test UI only: never deploy it in public.
-`adk deploy cloud_run` deploys the ADK dev server, not this app.
+- Production at 2,000 full chats a month: about $123 a month, plus the shared RAG database.
+- Agent Engine session billing started on 2026-09-01: storage is $0.30 per GiB-month after the free
+  1 GiB, so 64 KB per chat is negligible.
+- Not included: the Chatwoot plan and Meta's WhatsApp fees.
+- A saving for later: run the turns through Cloud Tasks instead of in-process background tasks. The
+  warm instance then bills at the idle rate (about $18 instead of $62). About 1 day of work.
 
-### Phase 1: make the webhook path work (done on `feat/cloud-run`)
+## Staging deploy command (after approval)
 
-- `9c5fd18`: the model retries transient Vertex AI errors (G5 of rerun 3); `tenacity` is in
-  `requirements.txt`.
-- `9eb7ed0`: the durable session layer and the new webhook (details in CLAUDE.md "Where the flow is
-  enforced"): signed calls only, the event filter, 200 at once with the turn in the background, one
-  turn at a time per chat, repeats skipped, no pending toggles, resume after a handoff, the IC-photo
-  handoff, no second product list, labels added (not replaced).
-- `282f8f4`: settings values are stripped of surrounding whitespace (secrets pasted with a newline).
-- What the Chatwoot v4.18.0 source says (Chatwoot Cloud reports 4.18.0 at `/api`):
-  - `lib/webhooks/trigger.rb`: 5 s timeout (installation config `WEBHOOK_TIMEOUT`). Agent-bot calls
-    are retried only on 429 and 500 (3 attempts, the same `X-Chatwoot-Delivery`). On any failure
-    of a message event, a pending chat is opened with the activity message "Conversation was marked
-    open by system due to an error with the agent bot". This is why the old code set every chat
-    back to pending: its turns took longer than 5 s.
-  - The signature: `X-Chatwoot-Signature: sha256=<hex HMAC-SHA256(secret, "<ts>.<body>")>` and
-    `X-Chatwoot-Timestamp`, for account, agent-bot and API-inbox webhooks (agent bots since v4.13).
-  - `app/listeners/agent_bot_listener.rb` and `Message#webhook_sendable?`: the bot receives
-    incoming, outgoing and template messages, `message_updated`, and conversation events, with no
-    status check.
-  - `app/controllers/concerns/access_token_auth_helper.rb`: what a bot token may call.
-  - `app/models/message.rb`: a resolved chat in an inbox with an active bot goes back to `pending`
-    when the customer writes (`reopen_resolved_conversation`).
-- The `.env` token is an agent bot token: `/profile` and `/inboxes` answer "not authorized for bots".
-
-### Phase 2: container and GCP setup
-
-Done on `feat/cloud-run` (`121d44b`):
-- `Dockerfile` (python:3.12-slim, non-root, uvicorn on `$PORT`), `.dockerignore`, and
-  `.gcloudignore`, an allow list. `gcloud meta list-files-for-upload` shows only the Dockerfile,
-  the two requirement files and `apps/` code: no `.env`, no key file, no `apps/.adk`.
-- `constraints.txt` pins all 119 packages to the tested `.venv`.
-- At shutdown the app waits up to 8 s for running turns.
-
-Created on 2026-09-24 with the user's approval (all in `prudential-poc-484904`), with these
-commands:
+Run from the repo root on `feat/cloud-run`. The two IDs come from `.env` and are not secrets;
+nothing here prints a secret.
 
 ```
 PROJECT=prudential-poc-484904
 SA=khind-sales-agent@$PROJECT.iam.gserviceaccount.com
-gcloud iam service-accounts create khind-sales-agent --project $PROJECT \
-  --display-name "KHIND sales agent (Cloud Run runtime)"
-gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:$SA \
-  --role roles/aiplatform.user --condition None        # Gemini, RAG, Agent Engine sessions
-gcloud storage buckets add-iam-policy-binding gs://khind_2028 --member serviceAccount:$SA \
-  --role roles/storage.objectViewer                    # product media
-for s in khind-staging-chatwoot-api-token khind-staging-chatwoot-webhook-secret; do
-  gcloud secrets create $s --project $PROJECT --replication-policy user-managed --locations asia-southeast1
-  gcloud secrets add-iam-policy-binding $s --project $PROJECT --member serviceAccount:$SA \
-    --role roles/secretmanager.secretAccessor
-done
-```
-
-- The service account has no user-managed key (checked).
-- Both secrets exist with no version yet. Only the service account can read them.
-- The staging Agent Engine: `khind-sales-sessions-staging`, ID `3247842999241015296`, created with
-  `vertexai.Client(...).agent_engines.create(config={"display_name": ...})`.
-- `roles/aiplatform.user` covers Gemini, RAG queries and Agent Engine sessions. It also allows
-  changes to RAG corpora; a custom role could narrow it later.
-- Cloud Run, Cloud Build, Artifact Registry (`cloud-run-source-deploy`) and Secret Manager were
-  already enabled.
-
-### Phase 3: deploy, staging first (needs approval)
-
-Before the deploy, the user does this in Chatwoot and in their own terminal:
-1. Create the test WhatsApp inbox.
-2. Settings > Bots: add an agent bot (for example "KHIND Sales Agent (staging)"). Any outgoing URL
-   will do for now. Connect it to the test inbox (inbox settings, Bot Configuration).
-3. Put the bot's access token and its Webhook Secret into Secret Manager. Paste each value, then
-   Ctrl-D, so it never passes through a chat (the app strips the newline):
-   ```
-   gcloud secrets versions add khind-staging-chatwoot-api-token --project prudential-poc-484904 --data-file=-
-   gcloud secrets versions add khind-staging-chatwoot-webhook-secret --project prudential-poc-484904 --data-file=-
-   ```
-
-The deploy, after approval (staging: engine `3247842999241015296`, officer from `.env`):
-
-```
-gcloud run deploy khind-sales-agent-staging --source . --region asia-southeast1 \
-  --project prudential-poc-484904 --service-account $SA --allow-unauthenticated \
+ACCOUNT_ID=$(grep '^CHATWOOT_ACCOUNT_ID=' .env | cut -d= -f2-)
+OFFICER_ID=$(grep '^CHATWOOT_HUMAN_AGENT_ID=' .env | cut -d= -f2-)
+gcloud run deploy khind-sales-agent-staging --source . --region asia-southeast1 --project $PROJECT \
+  --service-account $SA --allow-unauthenticated --quiet \
   --min-instances 1 --max-instances 1 --no-cpu-throttling --cpu 1 --memory 1Gi --timeout 60 \
-  --set-env-vars GOOGLE_GENAI_USE_VERTEXAI=TRUE,GOOGLE_CLOUD_PROJECT=prudential-poc-484904,\
-GOOGLE_CLOUD_LOCATION=asia-southeast1,LLM_MODEL=gemini-2.5-flash,RAG_CORPUS_NAME=<from .env>,\
-GCS_BUCKET=khind_2028,VERTEX_AI_AGENT_ENGINE_ID=<engine ID>,CHATWOOT_BASE_URL=https://app.chatwoot.com,\
-CHATWOOT_ACCOUNT_ID=<from .env>,CHATWOOT_HUMAN_AGENT_ID=<officer for staging handoffs> \
-  --set-secrets CHATWOOT_API_TOKEN=khind-staging-chatwoot-api-token:latest,\
-CHATWOOT_WEBHOOK_SECRET=khind-staging-chatwoot-webhook-secret:latest
+  --labels app=khind-sales-agent,env=staging \
+  --set-env-vars "GOOGLE_GENAI_USE_VERTEXAI=TRUE,GOOGLE_CLOUD_PROJECT=$PROJECT,\
+GOOGLE_CLOUD_LOCATION=asia-southeast1,LLM_MODEL=gemini-2.5-flash,\
+RAG_CORPUS_NAME=projects/$PROJECT/locations/asia-southeast1/ragCorpora/2305843009213693952,\
+GCS_BUCKET=khind_2028,VERTEX_AI_AGENT_ENGINE_ID=3247842999241015296,\
+CHATWOOT_BASE_URL=https://app.chatwoot.com,CHATWOOT_ACCOUNT_ID=$ACCOUNT_ID,\
+CHATWOOT_HUMAN_AGENT_ID=$OFFICER_ID" \
+  --set-secrets "CHATWOOT_API_TOKEN=khind-staging-chatwoot-api-token:latest,\
+CHATWOOT_WEBHOOK_SECRET=khind-staging-chatwoot-webhook-secret:latest"
 ```
 
-- `--allow-unauthenticated`: Chatwoot cannot send Google identity tokens; the signature is the guard.
-- `--min-instances 1`: a cold start is longer than Chatwoot's 5 s, and a late response opens the chat.
-- `--no-cpu-throttling`: the turn runs after the response, so the CPU must stay on.
+- `--allow-unauthenticated`: Chatwoot cannot send Google identity tokens. The signature check is
+  the guard.
+- `--min-instances 1`: a cold start takes longer than Chatwoot's 5 s, and a late response opens the
+  chat for officers.
+- `--no-cpu-throttling`: the turn runs after the 200, so the CPU must stay on.
 - `--max-instances 1`: the per-chat turn lock is in process memory.
+- `--labels`: Billing > Reports can then show this service's cost on its own.
 - Do not set `GOOGLE_APPLICATION_CREDENTIALS` or `PORT`.
-- Cost: an always-on instance with 1 vCPU and 1 GiB costs very roughly USD 50-70 a month per
-  service (check the asia-southeast1 price). Scale staging to 0 instances or delete it after the
-  tests.
+- Stop the cost after the tests:
+  `gcloud run services update khind-sales-agent-staging --min-instances 0 --region asia-southeast1 --project prudential-poc-484904`,
+  or `gcloud run services delete ...`. With 0 instances, a message after an idle period can
+  wait for a cold start, and Chatwoot then opens the chat.
 
-Then:
-1. Set the test bot's outgoing URL to `https://<service URL>/webhook`.
-2. Smoke test on WhatsApp:
-   - the happy path (A1 to A11), and the media order: 2 images and 1 video, then the text;
-   - an uncovered area (B2), not working (F3), a request for a human (F1), a product question (D1);
-   - after each handoff: the chat is open, the label is added, the note and the assignment are
-     there, and the bot stays silent;
-   - resolve a handed-over chat and write again: the bot resumes;
-   - the IC photos after the form: a `human-required` handoff and `IC_PHOTOS_RECEIVED_LINE`;
-   - the chat stays `pending` after bot replies, and there is no "marked open by system due to an
-     error with the agent bot" message;
-   - Cloud Logging: no errors, no "ADK runner failed", and no "without a valid Chatwoot signature".
-     That last log line means the secret does not match the bot's Webhook Secret.
-3. Production: deploy `khind-sales-agent` from the same source with the live bot's secrets
-   (`khind-chatwoot-api-token`, `khind-chatwoot-webhook-secret`), check it the same way, then
-   switch the live bot's outgoing URL. Rollback: point the bot back, or
+## Staging smoke test (WhatsApp, test inbox)
+
+1. The happy path (A1 to A11). On the first pick, 2 images and 1 video arrive before the text.
+2. The handoffs: an uncovered area (B2), not working (F3) and a request for a human (F1). After
+   each: the chat is open, the label is added next to any existing ones, the note and the
+   assignment are there, and the bot stays silent.
+3. Resolve a handed-over chat and write again: the bot resumes the flow.
+4. After the form: IC photos give a `human-required` handoff and `IC_PHOTOS_RECEIVED_LINE`.
+5. Throughout:
+   - the chat stays `pending` after bot replies;
+   - there is no "marked open by system due to an error with the agent bot" message;
+   - Cloud Logging shows no errors and no "ADK runner failed". A "without a valid Chatwoot
+     signature" line means the secret does not match the bot's Webhook Secret.
+
+## Production (after staging passes)
+
+1. Create `khind-chatwoot-api-token` and `khind-chatwoot-webhook-secret` (same commands as the
+   staging secrets). The user adds the live bot's values.
+2. Deploy `khind-sales-agent` with the same command. Change these: the service name,
+   `env=production`, `VERTEX_AI_AGENT_ENGINE_ID=5343705675828559872`, and the production secrets.
+3. Check it the same way, then switch the live bot's outgoing URL.
+4. Rollback: point the bot back, or
    `gcloud run services update-traffic khind-sales-agent --to-revisions <previous>=100`.
+5. Then Phase 4: alerts on the 5xx rate, "ADK runner failed" and "Webhook background task
+   failed", and a budget alert.
 
-### Phase 4: operate
+## User decisions (2026-09-24)
 
-- Alerts on the 5xx rate, on "ADK runner failed" and on "Webhook background task failed".
-- A budget alert for Vertex AI and Cloud Run spend.
-- Optional: a Cloud Build trigger on `main`.
+- Rerun 3 was the last smoke test. Its findings are open issues, not fixes in the flow PR.
+- Cloud Run:
+  - **D1:** stay in `prudential-poc-484904`.
+  - **D2:** a new Agent Engine for KHIND sessions (`khind-sales-sessions`). The engine that `.env`
+    named before belongs to another app: leave it alone.
+  - **D3:** check Chatwoot's signature (Chatwoot v4.18.0 signs agent-bot calls).
+  - **D4:** staging uses a separate test inbox with its own WhatsApp number and agent bot. The
+    user sets it up.
+  - After a handoff, a chat that is pending again resumes the flow.
+  - The Phase 2 resources: approved and created.
+  - Staging keeps its sessions in its own engine, `khind-sales-sessions-staging`.
+  - Staging handoffs go to the same officer as in `.env` (`CHATWOOT_HUMAN_AGENT_ID`).
+  - **The staging deploy needs a fresh approval** ("ask me again first").
 
-### Before go-live, outside the code (KHIND or the team)
+## What was built (Phases 1 and 2, on `feat/cloud-run`)
+
+- `9c5fd18`: the model retries transient Vertex AI errors (G5 of rerun 3), and `tenacity` is in
+  `requirements.txt`.
+- `9eb7ed0`: the durable session layer and the new webhook (see CLAUDE.md "Where the flow is
+  enforced"). It adds signed calls only, the event filter, and 200 at once with the turn in the
+  background. It also runs one turn at a time per chat, skips repeats, and drops the pending
+  toggles. A chat resumes after a handoff, IC photos hand over, the second product list is gone,
+  and labels are added, not replaced.
+- `121d44b`: the `Dockerfile` (python:3.12-slim, non-root) and `.dockerignore`. Also
+  `.gcloudignore`, an allow list: `gcloud meta list-files-for-upload` shows no `.env`, key file or
+  `apps/.adk`. And `constraints.txt` (119 pinned packages). At shutdown the app waits up to 8 s
+  for running turns.
+- `282f8f4`: settings values are stripped of surrounding whitespace.
+- What the Chatwoot v4.18.0 source says (Chatwoot Cloud reports 4.18.0 at `/api`):
+  - `lib/webhooks/trigger.rb`:
+    - 5 s timeout.
+    - Agent-bot calls are retried only on 429 and 500.
+    - On a failure of a message event, a pending chat is opened.
+  - The signature: `X-Chatwoot-Signature: sha256=<hex HMAC-SHA256(secret, "<ts>.<body>")>` and
+    `X-Chatwoot-Timestamp` (agent bots since v4.13).
+  - `app/listeners/agent_bot_listener.rb`: the bot receives incoming, outgoing and template
+    messages, `message_updated`, and conversation events, with no status check.
+  - `app/controllers/concerns/access_token_auth_helper.rb`: what a bot token may call.
+  - `app/models/message.rb`: a resolved chat in an inbox with an active bot goes back to `pending`
+    when the customer writes.
+- The `.env` token is an agent bot token (the live bot's).
+
+## Before go-live, outside the code (KHIND or the team)
 
 - Create the `not-working` label in Chatwoot.
 - Approve `IC_PHOTOS_RECEIVED_LINE`, and choose a label for IC photos if `human-required` is too
@@ -218,16 +237,15 @@ Then:
 
 ## Read these instead of re-deriving
 
-- `CLAUDE.md`: the flow, where each rule is enforced, pitfalls (including Chatwoot's) and open
-  issues.
+- `CLAUDE.md`: the flow, where each rule is enforced, pitfalls (including Chatwoot's and the RAG
+  database's) and open issues.
 - `git log main..feat/cloud-run` and `git show 9eb7ed0` for the webhook and session work.
 - `handoff/verification/`:
   - offline: `unit_checks.py` (158), `session_checks.py` (13), `webhook_checks.py` (43);
   - online: `session_online.py` (the real Agent Engine and Gemini; deletes its test session);
   - end to end: `replay_local.py` (the app and a mock Chatwoot on local ports; deletes its test
     session);
-  - `scenarios.py`: 17 real-Gemini scenarios with 64 checks, run against `adk api_server` on
-    port 8001;
+  - `scenarios.py`: 17 real-Gemini scenarios with 64 checks, against `adk api_server` on port 8001;
   - `extract_run.py`, `trace_run.py` and `check_run.py` for audits of an ADK Web run.
 - `handoff/smoke-test/`: the builder, the v2 csv and xlsx, the guide and the Astra prompt.
 - The shared test report (private until the user shares it):
@@ -235,9 +253,11 @@ Then:
 
 ## Suggested skills
 
+- `i-have-adhd:i-have-adhd`: the user asked for this answer style on 2026-09-24. Lead with the
+  next action, use numbered steps, give concrete time and cost figures, and restate where things
+  stand.
 - `simple-english`: CLAUDE.md, this file and the Obsidian notes use short, plain English.
-- `security-review`: before the service gets a public URL.
-- `run`: to start the app locally. Use `replay_local.py`, never the live `.env` Chatwoot values.
+- `security-review`: before the staging service gets its public URL.
 - `handoff`: write the next handoff into this same file.
 
 ## Environment
@@ -245,14 +265,13 @@ Then:
 - WSL2 (`Ubuntu-22.04`), `.venv` with Python 3.12, `google-adk==1.31.0`, and `gemini-2.5-flash`
   with a thinking budget of 1024. `uv` is installed. `openpyxl` is not in `.venv`; use
   `uv run --no-project --with openpyxl ...`.
-- `gcloud` is logged in to project `prudential-poc-484904`. Leave the project's other Cloud Run
-  service, Artifact Registry repos, secrets and the other Agent Engine alone: they belong to other
-  apps.
+- `gcloud` is logged in as the project owner, project `prudential-poc-484904`.
 - The `docker` CLI is installed, but no Docker daemon runs in WSL. Cloud Build builds the image at
   deploy time.
 - ADK Web runs on port 8000 (started by the user). Run verification servers on port 8001 with
   `--session_service_uri memory://`. Follow the `pkill` rules in CLAUDE.md.
-- `gh` is not installed; git in WSL has no credential helper.
+- `gh` is not installed; git in WSL has no credential helper. The user pushes from their own
+  terminal.
 - Secrets live in the git-ignored `.env` and the service-account JSON. Never print or copy them. The
   `.env` Chatwoot token and secret belong to the live agent bot. The test prompts use fictional
   identity data only.
